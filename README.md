@@ -4,10 +4,8 @@ A customer-service agent for a fictional Dubai-based airline, built for the Sale
 (English / Modern Standard Arabic), deterministic money and rules, identity enforced below the model, one MCP server
 per airline system, a human in the loop for exceptions, and an evaluation harness that reports pass^k.
 
-- `ARCHITECTURE.md` – how the pieces fit and where each guardrail lives
-- `docs/DECISIONS.md` – what was chosen, what was rejected, why
-- `docs/FAILURE_DIARY.md` – what broke and what it taught
-- `docs/STATUS.md` – current state, what needs keys/accounts, open points
+The design notes (architecture, the decision log, the failure diary and the status page) are working documents kept outside this
+repository; this snapshot carries the code, the data, the evaluation sets and the scripts.
 
 ## Run it locally (no Docker)
 
