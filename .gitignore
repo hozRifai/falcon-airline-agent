@@ -1,0 +1,18 @@
+.venv/
+.run/
+__pycache__/
+*.pyc
+.env
+web/node_modules/
+web/dist/
+eval/results/
+docs/qr.png
+.pytest_cache/
+*.egg-info/
+_sync/
+
+web/tsconfig.tsbuildinfo
+
+# public branch: working notes stay local
+*.md
+!README.md

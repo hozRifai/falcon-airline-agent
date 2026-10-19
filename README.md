@@ -1,0 +1,80 @@
+# Falcon Airline agent
+
+A customer-service agent for a fictional Dubai-based airline, built for the Salesforce FDE panel (23 Oct 2026). Bilingual
+(English / Modern Standard Arabic), deterministic money and rules, identity enforced below the model, one MCP server
+per airline system, a human in the loop for exceptions, and an evaluation harness that reports pass^k.
+
+- `ARCHITECTURE.md` – how the pieces fit and where each guardrail lives
+- `docs/DECISIONS.md` – what was chosen, what was rejected, why
+- `docs/FAILURE_DIARY.md` – what broke and what it taught
+- `docs/STATUS.md` – current state, what needs keys/accounts, open points
+
+## Run it locally (no Docker)
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate && pip install -e . pytest pytest-asyncio
+cp .env.example .env                      # defaults work locally; add OPENROUTER_API_KEY for a real model
+# Postgres 16 with pgvector on port 5433 (see scripts/dev.sh for the local cluster; or `docker compose up db`)
+python db/apply.py                        # schema + roles + deterministic seed (frozen clock 2026-10-20 09:00 Gulf)
+python scripts/ingest_policy.py           # Conditions of Carriage (Emirates, EN + AR PDFs), clause-linked, embedded with bge-m3 when the key is set
+(cd web && npm install && npm run build)  # the web app the runtime serves
+scripts/dev.sh start                      # legacy API 8010, MCP servers 8001-8003, runtime 8000
+open http://127.0.0.1:8000  (access code: falcon)
+```
+
+Without a model key the runtime uses a scripted stand-in model, so every flow can be seen working (bookings, quotes,
+confirmation button, logged cases). With `OPENROUTER_API_KEY` set, `LLM_MODEL` is used.
+
+## Tests
+
+```bash
+python -m pytest tests/test_rules.py tests/test_policy_parse.py -q   # no services needed
+python -m pytest tests/test_reservations_live.py -q                    # MCP servers + legacy API (services running)
+python -m pytest tests/test_runtime_live.py -q                         # end to end through the HTTP API, scripted model
+python -m falcon.eval.runner --fake --k 1                              # evaluation harness self-test
+python -m falcon.eval.runner --k 4                                     # the real evaluation (needs a model key)
+```
+
+## Run it with Docker (recommended on Windows)
+
+Needs Docker Desktop running. From the project folder (Git Bash, WSL or any shell):
+
+```bash
+scripts/reset.sh      # first time, or to put the demo data back: wipe DB, build, schema + seed + policy, start
+scripts/up.sh         # every other time, including after pulling new code: rebuild if needed, migrate the schema in place, start
+scripts/up.sh --trace # the same, plus the Phoenix trace UI on http://localhost:6006
+```
+
+Then open http://localhost:8000 and pick a customer in the left sidebar (no access code). Only the runtime is published (port 8000); the MCP servers
+and the legacy API are internal to the compose network. Postgres is also published on 5433 for a DB tool.
+
+- `scripts/reset.sh --data` resets only the data (no rebuild); `--clean` also rebuilds the image from zero
+- `scripts/up.sh --logs` starts and follows the runtime log; `--no-build` never rebuilds
+- `scripts/eval.sh --k 1 --filter cancel_saver` runs the evaluation harness against the running stack (reports in `eval/results/`)
+- Stop: `docker compose down` (data is kept; add `-v` to delete the database volume too)
+- Real model: put `OPENROUTER_API_KEY` in `.env`, then `scripts/up.sh`
+
+The scripts are thin wrappers over compose; the underlying commands are `docker compose build`,
+`docker compose run --rm init` (schema + roles + seed + policy index) and `docker compose up -d`.
+
+Cloud deployment is not part of the demo (decision #42): the same image runs anywhere a container, Postgres with pgvector
+and an OTLP collector are available; identity between services is the dev secret locally or Entra ID (`AUTH_MODE=entra`).
+
+## Layout
+
+```
+db/            schema.sql (4 schemas, least-privilege roles), seed.py (Dubai network, personas), apply.py
+data/policy/   the two Conditions of Carriage PDFs (EN, AR)
+src/falcon/core        config, clock, db, auth, rules engine, Arabic helpers, MCP server plumbing
+src/falcon/services    legacy_flight_api, mcp_reservations, mcp_flightops, mcp_policy, runtime (FastAPI + LangGraph)
+src/falcon/policy      parse_coc (EN/AR PDFs, ligature repair), search (dense, pgvector), rewrite (measured, off), embeddings
+src/falcon/eval        tasks, simulator, runner, scoring (pass^k)
+eval/tasks/            task YAML (EN, AR, adversarial)
+scripts/               reset.sh, up.sh, eval.sh, talk.py (Docker), dev.sh (no Docker), ingest_policy.py
+web/                   React/Vite/Tailwind app (EN/AR, RTL)
+tests/                 unit and live tests
+```
+
+Falcon Airline is fictional. The policy text is Emirates' public Conditions of Carriage for Passengers and Baggage
+(`data/policy/coc_en.pdf`, `coc_ar.pdf`), used with credit for demonstration only; the fare rules, network and data
+are Falcon's own and synthetic.

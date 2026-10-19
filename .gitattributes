@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings: Git Bash on Windows cannot run a script with CRLF lines.
+*.sh text eol=lf
+*.py text eol=lf
+*.sql text eol=lf

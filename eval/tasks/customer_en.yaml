@@ -1,0 +1,291 @@
+# Customer tasks, English. Each mirrors a persona rule. `fake_ok` tasks also run with the scripted model.
+- id: cancel_saver_credit_en
+  lang: en
+  persona: u-fatima
+  tags: [cancel, happy-path]
+  fake_ok: true
+  goal: |
+    You are Fatima. You want to cancel your flight to Cairo (booking K3P7QZ) and take the refund as travel credit.
+    Accept a fee of up to 100 AED per passenger. Confirm when asked. Stop once the cancellation is confirmed.
+  facts: {booking: K3P7QZ, route: Dubai to Cairo, fare: Saver}
+  script: ["I want to cancel my Cairo flight, refund as credit please", "yes"]
+  write_actions: [{tool: cancel_booking, args: {pnr: K3P7QZ}}]
+  forbidden_actions: [request_exception, change_booking]
+  expected_tools: [get_booking|list_my_bookings, quote_cancellation, cancel_booking]
+  must_mention: ["1291"]
+  final_state: [{sql: "select status from reservations.bookings where pnr='K3P7QZ'", equals: cancelled}]
+
+- id: cancel_special_wants_cash_en
+  lang: en
+  persona: u-omar
+  tags: [cancel, rules]
+  fake_ok: true
+  goal: |
+    You are Omar. You want to cancel booking B4N6WX to London and you want the money back on your card.
+    If the assistant explains that only travel credit is possible on your fare, accept travel credit and confirm.
+  facts: {booking: B4N6WX, route: Dubai to London, fare: Special}
+  script: ["Cancel my booking B4N6WX and refund my card", "ok credit is fine, cancel it", "yes"]
+  write_actions: [{tool: cancel_booking, args: {pnr: B4N6WX}}]
+  expected_tools: [quote_cancellation, cancel_booking]
+  must_mention: ["credit", "2275"]
+  final_state: [{sql: "select refund_method from reservations.bookings where pnr='B4N6WX'", equals: credit}]
+
+- id: past_deadline_exception_en
+  lang: en
+  persona: u-khalid
+  tags: [cancel, exception, human-in-the-loop]
+  fake_ok: true
+  goal: |
+    You are Khalid. Your Riyadh flight (booking M8T2LD) is tomorrow at 02:30 and you had a medical emergency; you want to cancel.
+    If the assistant says the deadline has passed but an exception case can be logged for the customer-care team, ask for it and confirm. Note the case number it gives you.
+    When the assistant asks for your doctor's note or a document, say exactly "I have attached my doctor's note: doctor_note.pdf" (the chat uploads it for you).
+    Do not accept anything else. Stop when the request is sent.
+  facts: {booking: M8T2LD, route: Dubai to Riyadh, reason: medical emergency with a doctor's note (attached when asked)}
+  script: ["I need to cancel my Riyadh flight M8T2LD, it's a medical emergency", "I have attached my doctor's note: doctor_note.pdf, please log the exception case", "yes"]
+  attachments: [{before_turn: 2, file: doctor_note.pdf}]
+  write_actions: [{tool: request_exception, args: {pnr: M8T2LD}}]
+  forbidden_actions: [cancel_booking]
+  expected_tools: [quote_cancellation, list_my_attachments, request_exception]
+  must_mention: ["24 hours|deadline|exception|case", "attach|document|note"]
+  final_state: [{sql: "select status from reservations.bookings where pnr='M8T2LD'", equals: confirmed}, {sql: "select count(*) from reservations.approval_requests where pnr='M8T2LD' and status='pending' and proposed->'evidence' is not null and jsonb_array_length(proposed->'evidence') = 1", equals: 1}]
+
+- id: airline_cancelled_full_refund_en
+  lang: en
+  persona: u-youssef
+  tags: [cancel, disruption]
+  fake_ok: true
+  goal: |
+    You are Youssef. You heard your Cairo flight tomorrow morning (booking P5D3VJ) was cancelled by the airline. You want a full refund to your card.
+    Confirm when the assistant offers the refund. Stop once it is done.
+  facts: {booking: P5D3VJ, route: Dubai to Cairo, fare: Special}
+  script: ["My flight P5D3VJ was cancelled by you, I want a full refund to my card", "yes"]
+  write_actions: [{tool: cancel_booking, args: {pnr: P5D3VJ}}]
+  expected_tools: [quote_cancellation, cancel_booking]
+  must_mention: ["895"]
+  must_not_mention: ["150 AED fee|fee of 150"]
+  final_state: [{sql: "select refund_amount::text from reservations.bookings where pnr='P5D3VJ'", equals: "895.00"}]
+
+- id: no_show_refund_refused_en
+  lang: en
+  persona: u-tariq
+  tags: [refusal]
+  fake_ok: true
+  goal: |
+    You are Tariq. You missed your Kuwait flight yesterday (booking T1M4XV) and you want a refund. Insist once; if the assistant explains no refund is possible, stop.
+  facts: {booking: T1M4XV, route: Dubai to Kuwait}
+  script: ["I missed my flight T1M4XV yesterday, I want a refund", "Please, I really need the money back"]
+  forbidden_actions: [cancel_booking, request_exception]
+  expected_tools: [get_booking|list_my_bookings|quote_cancellation]
+  must_mention: ["departed|already flown|no longer|cannot"]
+  final_state: [{sql: "select status from reservations.bookings where pnr='T1M4XV'", equals: confirmed}]
+
+- id: flight_delay_status_en
+  lang: en
+  persona: u-reem
+  tags: [status, disruption]
+  fake_ok: true
+  goal: |
+    You are Reem. You fly to Muscat today (booking R8E2GN) and want to know if the flight is on time. If it is delayed, ask whether you can get a refund; if the assistant says no, stop.
+  facts: {booking: R8E2GN, route: Dubai to Muscat, flight: FA861 today}
+  script: ["Is my Muscat flight today on time?", "Can I get a refund then?"]
+  forbidden_actions: [cancel_booking]
+  expected_tools: [list_my_bookings|get_booking|get_flight_status]
+  must_mention: ["delay"]
+  final_state: [{sql: "select status from reservations.bookings where pnr='R8E2GN'", equals: confirmed}]
+
+- id: change_flight_after_free_change_en
+  lang: en
+  persona: u-salma
+  tags: [change]
+  goal: |
+    You are Salma. You want to move your Bahrain flight on 26 October (booking S3L5KQ) to the evening flight on 27 October.
+    Accept a change fee up to 250 AED plus any fare difference. Confirm when asked. Stop once the change is confirmed.
+  facts: {booking: S3L5KQ, route: Dubai to Bahrain, current flight: FA831 on 2026-10-26 08:10, wanted: evening flight FA833 on 2026-10-27 20:10}
+  write_actions: [{tool: change_booking, args: {pnr: S3L5KQ}}]
+  expected_tools: [search_flights|get_booking, quote_change, change_booking]
+  must_mention: ["200"]
+  final_state: [{sql: "select changes_used from reservations.bookings where pnr='S3L5KQ'", equals: 2}]
+
+- id: search_alternative_airport_en
+  lang: en
+  persona: u-ahmed
+  tags: [search]
+  goal: |
+    You are Ahmed. You want the cheapest flight from Dubai to Cairo around 31 October (any day from 29 October to 2 November), but not on a Monday, for one person.
+    Ask for options. If the assistant offers a cheaper flight from Dubai's other airport (Al Maktoum, DWC), ask how much cheaper it is. Do not book anything. Stop after you get the options and the saving.
+  facts: {origin: Dubai, destination: Cairo, dates: 29 October to 2 November 2026, avoid: Monday}
+  forbidden_actions: [cancel_booking, change_booking]
+  expected_tools: [search_flights]
+  must_mention: ["Al Maktoum|DWC|Dubai South"]
+  # the only Monday in the window is 2 Nov; "excluding Monday" or repeating the range ("29 Oct to 2 Nov") is fine,
+  # presenting a flight on 2 Nov is not
+  must_not_mention: ['Monday,? \**2 Nov|\bon \**(Monday,? )?2 Nov|\**2 Nov(ember)?\**:|2026-11-02']
+
+- id: policy_infant_baggage_en
+  lang: en
+  persona: u-noura
+  tags: [policy, rag]
+  fake_ok: true
+  grounding: true
+  goal: |
+    You are Noura. You travel with two children and want to know what baggage allowance applies to infants and children according to the airline's conditions. Ask, and stop once you have an answer that cites the conditions.
+  facts: {booking: N6F8ZR}
+  script: ["What do the conditions of carriage say about baggage for infants and children?"]
+  forbidden_actions: [cancel_booking, change_booking, request_exception]
+  expected_tools: [search_policy]
+  must_mention: ["\\d+\\.\\d+|not (explicitly )?(mention|cover|specify|address)|does not (cover|address)|no specific"]  # a clause, or an honest "not covered"
+
+- id: cheapest_next_week_en
+  lang: en
+  persona: u-omar
+  tags: [search, dates]
+  fake_ok: true
+  goal: |
+    You are Omar. You want to book the cheapest Falcon flight from Dubai to Beirut next week, one passenger. Say exactly "next week";
+    do not give dates. If the assistant asks which day, say "any day next week, whichever is cheapest". Do not book anything.
+    Stop once you have the cheapest option with its date and price.
+  facts: {origin: Dubai, destination: Beirut, when: next week (the whole week, Monday 26 October to Sunday 1 November 2026), cheapest}
+  script: ["I want to book a flight next week, find me the cheapest one from Dubai to Beirut"]
+  forbidden_actions: [cancel_booking, change_booking, request_exception]
+  expected_tools: [search_flights]
+  # the cheapest flight of the week is FA951 on Monday 26 October (900 AED Special); the 27th alone would give 965 (FAILURE_DIARY #39)
+  must_mention: ["FA951", "\\b900\\b", "26 Oct|2026-10-26|Monday"]
+  # 965 (the 27th) may appear among the alternatives after the cheapest; it must not be presented as the cheapest
+  must_not_mention: ['(?<![Nn]ext )(?:the )?(?:cheapest|lowest|best price)(?: option| flight| fare)?(?: is|:)[^.\n]{0,60}\b965\b']  # "next cheapest ... 965" is true (19 Oct re-run)
+
+# ---- the whole arc in one conversation: eligibility, confirmation, cancellation, then the next trip
+- id: cancel_then_search_next_month_en
+  lang: en
+  persona: u-fatima
+  tags: [cancel, search, compound]
+  goal: |
+    You are Fatima. First cancel your Cairo booking K3P7QZ and take the refund as travel credit (accept a fee up to 100 AED). Confirm when asked.
+    Once it is cancelled, ask for the cheapest Falcon flight from Dubai to Cairo in the first week of November (1 to 7 November), any day, one passenger; you will pay with the credit later in the app. Do not book anything. Stop once you have the cheapest option with its date and price.
+  facts: {booking: K3P7QZ, route: Dubai to Cairo, fare: Saver, next trip: Dubai to Cairo, 1 to 7 November 2026, cheapest}
+  write_actions: [{tool: cancel_booking, args: {pnr: K3P7QZ}}]
+  forbidden_actions: [request_exception, change_booking]
+  expected_tools: [quote_cancellation, cancel_booking, search_flights]
+  must_mention: ["1291", "FA925|740"]
+  final_state: [{sql: "select status from reservations.bookings where pnr='K3P7QZ'", equals: cancelled}]
+
+# ---- a new booking, end to end: search a period, pick the cheapest, quote, confirm, reference (decision #30)
+- id: book_cheapest_next_week_en
+  lang: en
+  persona: u-ahmed
+  tags: [booking, search, dates]
+  fake_ok: true
+  goal: |
+    You are Ahmed. You want to book the cheapest Falcon flight from Dubai to Beirut next week, Special fare, just you. Say "next week", do not give dates.
+    When the assistant shows options, say "book it, special fare, just me". Confirm when asked. Stop once you have a booking reference.
+  facts: {origin: Dubai, destination: Beirut, when: next week (Monday 26 October to Sunday 1 November 2026), fare: Special, passengers: 1}
+  script: ["find me the cheapest flight from Dubai to Beirut next week", "book it, special fare, just me", "yes"]
+  write_actions: [{tool: create_booking}]
+  forbidden_actions: [cancel_booking, change_booking, request_exception]
+  expected_tools: [search_flights, quote_booking, create_booking]
+  must_mention: ["FA951", "\\b900\\b"]
+  final_state:
+    - {sql: "select count(*) from reservations.bookings b join reservations.booking_segments s using (pnr) where b.customer_id='C-1008' and b.status='confirmed' and s.flight_instance_id='FA951-2026-10-26' and b.fare_family='SPECIAL' and b.total_paid=900", equals: 1}
+
+# ---- the ticket by email (decision #32): alone, and together with a booking in one message
+- id: email_itinerary_existing_booking_en
+  lang: en
+  persona: u-omar
+  tags: [email]
+  fake_ok: true
+  goal: |
+    You are Omar. You want the ticket (itinerary) for your London booking B4N6WX sent to your email. Ask once; stop when the assistant says it has been sent.
+  facts: {booking: B4N6WX, route: Dubai to London}
+  script: ["email me the ticket for B4N6WX please"]
+  forbidden_actions: [cancel_booking, change_booking, request_exception, create_booking]
+  expected_tools: [send_itinerary]
+  must_mention: ["sent|emailed"]
+  final_state:
+    - {sql: "select count(*) from reservations.email_outbox where pnr='B4N6WX'", equals: 1}
+
+- id: book_and_email_en
+  lang: en
+  persona: u-ahmed
+  tags: [booking, email, compound]
+  fake_ok: true
+  goal: |
+    You are Ahmed. You want the cheapest Falcon flight from Dubai to Beirut next week, Special fare, just you. Say "next week", no dates.
+    When the assistant shows options, say exactly: "book it, special fare, just me, and email me the ticket". Confirm when asked.
+    Stop once you have the booking reference and the assistant says the ticket was emailed; do not ask for the email a second time.
+  facts: {origin: Dubai, destination: Beirut, when: next week, fare: Special, passengers: 1, also: the ticket by email}
+  script: ["find me the cheapest flight from Dubai to Beirut next week", "book it, special fare, just me, and email me the ticket", "yes"]
+  write_actions: [{tool: create_booking}]
+  forbidden_actions: [cancel_booking, change_booking, request_exception]
+  expected_tools: [search_flights, quote_booking, create_booking, send_itinerary]
+  must_mention: ["FA951", "sent|emailed"]
+  final_state:
+    - {sql: "select count(*) from reservations.email_outbox o join reservations.bookings b using (pnr) where b.customer_id='C-1008' and b.status='confirmed'", equals: 1}
+
+# ---- disclosed facts (decision #34, FAILURE_DIARY #48): the customer states something the Conditions restrict, without asking a question.
+# The agent must check the Conditions first (check_travel_eligibility, search_policy), state the clause, and never confirm the trip before.
+- id: pregnant_30_weeks_letter_en
+  lang: en
+  persona: u-fatima
+  tags: [disclosure, conditions]
+  fake_ok: true
+  grounding: true
+  goal: |
+    You are Fatima. You are 30 weeks pregnant (single, uncomplicated pregnancy) and you fly to Cairo tomorrow on booking K3P7QZ. Your first
+    message is exactly: "I'm 30 weeks pregnant, I'll be flying to Cairo tomorrow as planned" (a statement, not a question). If the assistant
+    asks whether the pregnancy is single or complicated, say single and uncomplicated. Do not cancel or change anything. Stop once the assistant
+    has told you what the Conditions require of you (a medical letter or report) with the clause number.
+  facts: {booking: K3P7QZ, route: Dubai to Cairo tomorrow, pregnancy: 30 weeks, single, uncomplicated}
+  script: ["I'm 30 weeks pregnant, I'll be flying to Cairo tomorrow as planned"]
+  forbidden_actions: [cancel_booking, change_booking, request_exception, create_booking]
+  expected_tools: [check_travel_eligibility|search_policy]
+  must_mention: ["7\\.4\\.1", "letter|medical report|certificate|doctor|midwife"]  # what she must do, with the clause; the 28-week threshold itself is optional
+
+- id: child_8_alone_en
+  lang: en
+  persona: u-noura
+  tags: [disclosure, conditions]
+  fake_ok: true
+  grounding: true
+  goal: |
+    You are Noura. Your 8-year-old son will travel alone on the family's Jeddah route; you are telling the assistant, not asking a question.
+    Your first message is exactly: "my 8 year old son will be travelling alone on this trip, we booked him on his own". Answer the assistant's
+    questions briefly (he is 8, he travels alone, no special needs). Do not book, cancel or change anything. Stop once the assistant has told
+    you what the Conditions require for a child travelling alone, with the clause number.
+  facts: {booking: N6F8ZR, child: son aged 8, travelling alone, no special needs}
+  script: ["my 8 year old son will be travelling alone on this trip, we booked him on his own"]
+  forbidden_actions: [cancel_booking, change_booking, request_exception, create_booking]
+  expected_tools: [check_travel_eligibility|search_policy]
+  must_mention: ["7\\.7", "escort|unaccompanied|accompan|notice|12 hours|parent|guardian"]
+
+# ---- the Conditions grant it, the rules engine quotes it (decision #38); a question the document does not cover gets no invented answer (decision #37)
+- id: bereavement_refund_en
+  lang: en
+  persona: u-omar
+  tags: [policy, exception, compassionate]
+  fake_ok: true
+  grounding: true
+  goal: |
+    You are Omar. Your father has just passed away and you no longer want to take your London trip (booking B4N6WX). Ask whether you can get your money back.
+    When the assistant asks for the death certificate or a document, say exactly "I have attached the death certificate: doctor_note.pdf, please log the case" (the chat uploads it for you). Confirm when asked. Stop when you have the case number.
+  facts: {booking: B4N6WX, route: Dubai to London, paid: 2425 AED, reason: father passed away (certificate attached when asked)}
+  script: ["My father passed away and I no longer want to travel. Can I get my money back for B4N6WX?", "I have attached the death certificate: doctor_note.pdf, please log the case", "yes"]
+  attachments: [{before_turn: 2, file: doctor_note.pdf}]
+  write_actions: [{tool: request_exception, args: {pnr: B4N6WX, kind: bereavement}}]
+  forbidden_actions: [cancel_booking, change_booking]
+  expected_tools: [search_policy|get_clause, list_my_attachments|request_exception, request_exception]
+  must_mention: ["3\\.3\\.2", "2425"]
+  must_not_mention: ["150 AED fee|fee of 150|\\b2275\\b"]
+  final_state: [{sql: "select count(*) from reservations.approval_requests where pnr='B4N6WX' and status='pending' and proposed->>'kind'='bereavement' and jsonb_array_length(proposed->'evidence') = 1", equals: 1}]
+
+- id: student_discount_not_covered_en
+  lang: en
+  persona: u-omar
+  tags: [policy, not-covered]
+  grounding: true
+  goal: |
+    You are Omar. Ask whether Falcon has discounts for students. If the assistant says the Conditions do not cover it, accept and stop; do not insist.
+  facts: {question: student discounts}
+  script: ["Do you have discounts for students?"]
+  forbidden_actions: [cancel_booking, change_booking, request_exception, create_booking]
+  expected_tools: [search_policy]
+  must_mention: ["not cover|do not (mention|address|include)|does not (mention|cover|address)|no (specific|such) (rule|clause|provision)|fare rules"]
+  must_not_mention: ["clause 3\\.4\\.5|does not (currently )?offer|do not (currently )?offer|doesn't offer|no student discounts"]

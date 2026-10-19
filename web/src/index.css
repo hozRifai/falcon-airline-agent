@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", "IBM Plex Sans Arabic", system-ui, sans-serif;
+  --color-navy-900: #0b2545;
+  --color-navy-800: #13315c;
+  --color-navy-700: #1b4079;
+  --color-sand-50: #fbf8f2;
+  --color-sand-100: #f3ede0;
+  --color-sand-200: #e6dcc4;
+  --color-teal-500: #0e9f8f;
+  --color-teal-600: #0b7f72;
+  --color-ember-500: #d9772f;
+}
+
+html, body, #root { height: 100%; }
+body { background: var(--color-sand-50); color: #1a1d24; font-family: var(--font-sans); }
+[dir="rtl"] body, [dir="rtl"] { font-family: "IBM Plex Sans Arabic", "IBM Plex Sans", system-ui, sans-serif; }
+
+/* component classes live in the components layer so that utilities (hidden, lg:hidden, ...) can override them */
+@layer components {
+  .card { @apply bg-white rounded-2xl shadow-sm border border-sand-200; }
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 font-medium transition disabled:opacity-50 disabled:cursor-not-allowed; }
+  .btn-primary { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 font-medium transition disabled:opacity-50 disabled:cursor-not-allowed bg-navy-800 text-white hover:bg-navy-700; }
+  .btn-ghost { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 font-medium transition disabled:opacity-50 disabled:cursor-not-allowed bg-transparent text-navy-800 hover:bg-sand-100; }
+  .btn-danger { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 font-medium transition disabled:opacity-50 disabled:cursor-not-allowed bg-red-600 text-white hover:bg-red-700; }
+  .btn-teal { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 font-medium transition disabled:opacity-50 disabled:cursor-not-allowed bg-teal-500 text-white hover:bg-teal-600; }
+  .input { @apply w-full rounded-xl border border-sand-200 bg-white px-3 py-2 outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20; }
+  .chip { @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium; }
+}
+.pass-notch { position: relative; }
+.pass-notch::before, .pass-notch::after { content: ""; position: absolute; top: 50%; width: 20px; height: 20px; background: var(--color-sand-50); border-radius: 999px; transform: translateY(-50%); }
+.pass-notch::before { left: -10px; } .pass-notch::after { right: -10px; }
+@keyframes pulse-dot { 0%, 80%, 100% { opacity: .2 } 40% { opacity: 1 } }
+.dot { animation: pulse-dot 1.2s infinite; } .dot:nth-child(2) { animation-delay: .2s } .dot:nth-child(3) { animation-delay: .4s }

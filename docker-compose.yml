@@ -1,0 +1,94 @@
+# Local stack with Docker: one Postgres (pgvector) and five services from one image.
+#   docker compose up --build            # everything
+#   docker compose run --rm init         # schema + seed + policy ingest (run once, and to reset)
+#   docker compose run --rm eval ...     # evaluation harness against the running stack (see scripts/eval.sh)
+#   docker compose --profile observability up -d phoenix   # trace UI at http://localhost:6006 (scripts/up.sh --trace)
+# Each service talks to the others by service name; the runtime (8000) and the trace UI (6006) are the public ports.
+# Tracing (decision #27): set OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6006 in .env (or run scripts/up.sh --trace) and every
+# service exports OpenTelemetry spans there; point it at Langfuse or leave it empty (no tracing) without any code change.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_PASSWORD: ${PGADMIN_PASSWORD:-falcon_super}
+      POSTGRES_DB: falcon
+    ports: ["5433:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres"], interval: 5s, timeout: 3s, retries: 20 }
+
+  init:
+    build: .
+    env_file: .env
+    environment: &svc_env
+      PGHOST: db
+      PGPORT: "5432"
+      LEGACY_API_URL: http://legacy:8010
+      MCP_RESERVATIONS_URL: http://reservations:8001/mcp
+      MCP_FLIGHTOPS_URL: http://flightops:8002/mcp
+      MCP_POLICY_URL: http://policy:8003/mcp
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    command: sh -c "python db/apply.py && python scripts/ingest_policy.py"
+    depends_on: { db: { condition: service_healthy } }
+    profiles: ["init"]
+
+  legacy:
+    build: .
+    env_file: .env
+    environment: *svc_env
+    command: uvicorn falcon.services.legacy_flight_api.app:app --host 0.0.0.0 --port 8010
+    depends_on: { db: { condition: service_healthy } }
+
+  reservations:
+    build: .
+    env_file: .env
+    environment: *svc_env
+    command: python -m falcon.services.mcp_reservations.server
+    depends_on: [legacy]
+
+  flightops:
+    build: .
+    env_file: .env
+    environment: *svc_env
+    command: python -m falcon.services.mcp_flightops.server
+    depends_on: [legacy]
+
+  policy:
+    build: .
+    env_file: .env
+    environment: *svc_env
+    command: python -m falcon.services.mcp_policy.server
+    depends_on: { db: { condition: service_healthy } }
+
+  runtime:
+    build: .
+    env_file: .env
+    environment: *svc_env
+    command: uvicorn falcon.services.runtime.app:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    depends_on: [reservations, flightops, policy]
+
+  # Evaluation harness, run on demand against the running stack (scripts/eval.sh). Results are written to
+  # ./eval/results on the host through the bind mount, so reports survive the container.
+  eval:
+    build: .
+    env_file: .env
+    environment:
+      <<: *svc_env
+      RUNTIME_PUBLIC_URL: http://runtime:8000
+    command: python -m falcon.eval.runner --k 1
+    volumes: ["./eval/results:/app/eval/results"]
+    depends_on: [runtime]
+    profiles: ["eval"]
+
+  # Trace UI (Arize Phoenix): OTLP in on 6006 (HTTP) and 4317 (gRPC), UI on http://localhost:6006. Optional profile.
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports: ["6006:6006", "4317:4317"]
+    environment:
+      PHOENIX_WORKING_DIR: /data
+    volumes: ["phoenixdata:/data"]
+    profiles: ["observability"]
+
+volumes:
+  pgdata: {}
+  phoenixdata: {}

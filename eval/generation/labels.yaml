@@ -1,0 +1,300 @@
+# Hand labels for validating the generation judge (docs/EVALUATION.md §4, decision #35).
+#
+# Ten replies of the 18 Oct runs (`run` names the results folder; the reply and the retrieved clause ids are copied here, so the file
+# stands on its own). Read the clause texts in labels_context.md, then the reply, and fill `hozayfa:` with the rubric of
+# src/falcon/eval/generation.py (RUBRIC): faithfulness, relevance, completeness from 1 to 5, said_not_covered true/false, a short note.
+# Grade against the clause texts only, never from what you know about airlines. Leave a score null if you cannot decide.
+# `claude:` holds the labels of the session that built the judge (18 Oct), written from the same texts before looking at the judge's
+# scores; the runner reports the judge's agreement with each labeller separately:
+#     docker compose run --rm --build eval python -m falcon.eval.generation --validate
+- id: medical_emergency_cancellation_en
+  lang: en
+  answerable: true
+  question: What is the policy when cancellation is due to a medical emergency?
+  retrieved:
+  - 5.1.2
+  - 5.7.1
+  - 7.5.4
+  - 7.6.2
+  - 9.2.1
+  - 9.2.2
+  reply: |-
+    When cancellation is due to a medical emergency, Falcon Airline's policy allows for exceptions under certain conditions. Here’s what applies:
+
+    1. **Documentation Required**: If the cancellation is due to a medical emergency, you will need to provide supporting evidence, such as a doctor’s note or medical certificate. This document must be attached to your request.
+
+    2. **Exception Case**: You can request an exception by logging a case with the customer-care team. They will review your evidence and decide whether to approve the cancellation with waived fees or a refund.
+
+    3. **Refund Options**: If approved, you may receive a refund either as travel credit or cash, depending on your preference and the fare rules.
+
+    To proceed, please attach the relevant medical document (e.g., a doctor’s note) using the paperclip icon in the chat. Once attached, I can log the exception case for you. Let me know if you need further assistance!
+  hozayfa:
+    faithfulness: null
+    relevance: null
+    completeness: null
+    said_not_covered: null
+    note: ''
+  claude:
+    faithfulness: 1
+    relevance: 4
+    completeness: 2
+    said_not_covered: false
+    note: Describes Falcon's exception process (doctor's note, case, refund) as policy; none of the six clauses says any of it, and
+      the reply neither cites nor says the document is silent. 9.2.2/9.2.1 are airline-caused cancellations.
+  run: generation-20261018-121436
+- id: infant_child_baggage_en
+  lang: en
+  answerable: true
+  question: What do the conditions of carriage say about baggage for infants and children?
+  retrieved:
+  - 7.4.2
+  - 7.7.3
+  - 8.10.1
+  - 8.3.2
+  - 8.8.1
+  - 8.8.2
+  reply: "The Conditions of Carriage do not explicitly mention specific baggage allowances for infants and children in the clauses provided.\
+    \ However, general baggage rules apply to all passengers, including infants and children. \n\nFor more precise details, you may\
+    \ want to check the fare rules for your specific booking, as baggage allowances can vary based on the fare family (Special, Saver,\
+    \ Flex). Would you like me to look up the fare rules for your current booking?"
+  hozayfa:
+    faithfulness: null
+    relevance: null
+    completeness: null
+    said_not_covered: null
+    note: ''
+  claude:
+    faithfulness: 4
+    relevance: 5
+    completeness: 4
+    said_not_covered: true
+    note: Says the clauses give no infant/child allowance (true) and points to the fare rules; 'general rules apply to all passengers'
+      is a mild inference, and 8.3.2(d) (duty items for unaccompanied under-16s) could have been mentioned.
+  run: generation-20261018-121436
+- id: student_discount_en
+  lang: en
+  answerable: false
+  question: Do you have discounts for students?
+  retrieved:
+  - 10.1.1
+  - 10.3.1
+  - 3.1.6
+  - 3.4.3
+  - 3.4.5
+  - 4.2.5
+  reply: "Falcon Airline does not currently offer specific student discounts as per our Conditions of Carriage (clause 3.4.5). However,\
+    \ you may find special fares or promotions that could apply to your travel needs. \n\nIf you'd like, I can check for any available\
+    \ promotions or special fares for your desired route and dates. Let me know your travel details!"
+  hozayfa:
+    faithfulness: null
+    relevance: null
+    completeness: null
+    said_not_covered: null
+    note: ''
+  claude:
+    faithfulness: 1
+    relevance: 4
+    completeness: 2
+    said_not_covered: false
+    note: Attributes 'no student discounts' to clause 3.4.5, which is about accepting flight coupons; nothing retrieved speaks of discounts,
+      so the honest answer was 'not covered'.
+  run: generation-20261018-121436
+- id: airline_cancels_flight_en
+  lang: en
+  answerable: true
+  question: What are my options if the airline cancels my flight?
+  retrieved: []
+  reply: |-
+    If Falcon cancels your flight, you have two options:
+
+    1. **Full Refund**: You can receive a full refund to your original payment method or as travel credit. I can provide the exact refund amount for you.
+
+    2. **Free Rebooking**: You can rebook on another Falcon flight for the same route at no additional cost. Let me know your preferred date, and I’ll check availability.
+
+    Would you like to proceed with a refund or rebooking?
+  hozayfa:
+    faithfulness: null
+    relevance: null
+    completeness: null
+    said_not_covered: null
+    note: ''
+  claude:
+    faithfulness: 1
+    relevance: 5
+    completeness: 1
+    said_not_covered: false
+    note: No clause retrieved; the two options are stated as the airline's rules with nothing shown to support them (they came from
+      the booking tool's line, which the judge cannot see).
+  run: generation-20261018-121436
+- id: refused_entry_costs_en
+  lang: en
+  answerable: true
+  question: If immigration doesn't let me into the country when I land, who pays for my flight back?
+  retrieved:
+  - 10.4.2
+  - 13.2.1
+  - 13.2.2
+  - '13.3'
+  - 9.3.2
+  - 9.3.3
+  reply: "If immigration denies you entry into the country when you land, **you are responsible for paying the costs** of your return\
+    \ flight, as well as any fines, detention costs, or other charges incurred (clause 13.2.1). Falcon Airline will not refund the fare\
+    \ paid for the flight to the destination where entry was refused (clause 13.2.2). \n\nLet me know if you need further assistance!"
+  hozayfa:
+    faithfulness: null
+    relevance: null
+    completeness: null
+    said_not_covered: null
+    note: ''
+  claude:
+    faithfulness: 5
+    relevance: 5
+    completeness: 4
+    said_not_covered: false
+    note: 13.2.1 and 13.2.2 correctly stated; 13.3 (reimbursement on request, use of unused ticket value) is a relevant detail left
+      out.
+  run: generation-20261018-121436
+- id: check_in_deadline_ar
+  lang: ar
+  answerable: true
+  question: كم من الوقت قبل الإقلاع يجب أن أكون في مكتب تسجيل الوصول إذا كنت مسافرًا على الدرجة السياحية؟
+  retrieved:
+  - 5.1.3
+  - 5.6.1
+  - '6.1'
+  - '6.2'
+  - '6.3'
+  - 9.1.2
+  reply: "وفقًا للبند **6.1** من شروط النقل، يجب عليك الحضور لإنجاز إجراءات السفر (التسجيل) في موعد لا يتجاوز **3 ساعات** قبل موعد المغادرة\
+    \ المقرر لرحلتك إذا كنت مسافرًا على الدرجة السياحية. \n\nإذا كانت لديك أي استفسارات أخرى، لا تتردد في طرحها!"
+  hozayfa:
+    faithfulness: null
+    relevance: null
+    completeness: null
+    said_not_covered: null
+    note: ''
+  claude:
+    faithfulness: 5
+    relevance: 5
+    completeness: 4
+    said_not_covered: false
+    note: 6.1's 3 hours for Economy, correctly cited; 6.2 (longer deadlines at some airports) and 6.3 (gate time) left out.
+  run: generation-20261018-121436
+- id: pregnancy_30_weeks_ar
+  lang: ar
+  answerable: true
+  question: أنا حامل في الأسبوع الثلاثين، هل يمكنني السفر؟ وما المستندات المطلوبة مني؟
+  retrieved:
+  - 7.3.2
+  - 7.3.3
+  - 7.4.1
+  - 7.4.2
+  - 7.4.3
+  - 7.4.4
+  reply: "بناءً على شروط النقل (البند 7.4.1 و7.4.3)، يمكنك السفر في الأسبوع الثلاثين من الحمل بشرط تقديم تقرير طبي موقّع من طبيب أو\
+    \ قابلة مؤهلين يتضمن:\n\n1. **نوع الحمل**: سواء كان بجنين واحد أو متعدد.\n2. **حالة الحمل**: التأكيد على أنه غير معقد.\n3. **التاريخ\
+    \ المتوقع للولادة**.\n4. **آخر تاريخ يُتوقع أن تكوني فيه مؤهلة للسفر**.\n5. **حالتك الصحية العامة**: التأكيد على أنك بصحة جيدة ولا\
+    \ يوجد ما يمنعك من الطيران.\n\n**ملاحظة مهمة**: لا يُسمح بالسفر بعد الأسبوع السادس والثلاثين للحمل بجنين واحد، أو بعد الأسبوع الثاني\
+    \ والثلاثين للحمل المتعدد.\n\nإذا كان حملك معقدًا، يلزم تقديم استمارة معلومات طبية (MEDIF) والحصول على تصريح مسبق من القسم الطبي\
+    \ للخطوط الجوية (البند 7.4.2).\n\n### الخطوات التالية:\n- يُرجى تحميل التقرير الطبي المطلوب باستخدام أداة المرفقات في الدردشة.\n\
+    - بعد ذلك، يمكننا المتابعة في عملية الحجز أو أي استفسار آخر. \n\nهل لديك أي استفسارات أخرى؟"
+  hozayfa:
+    faithfulness: null
+    relevance: null
+    completeness: null
+    said_not_covered: null
+    note: ''
+  claude:
+    faithfulness: 5
+    relevance: 5
+    completeness: 5
+    said_not_covered: false
+    note: 7.4.1's letter and its contents, 7.4.3's 36/32-week limits and 7.4.2's MEDIF for a complicated pregnancy, all cited; 7.4.4
+      (costs if the week was misstated) is marginal.
+  run: generation-20261018-121436
+- id: medical_emergency_cancellation_ar
+  lang: ar
+  answerable: true
+  question: ما هي السياسة عندما يكون إلغاء الحجز بسبب حالة طبية طارئة؟
+  retrieved:
+  - 5.1.2
+  - 5.2.4
+  - 5.6.2
+  - 5.6.3
+  - 5.7.1
+  - 9.2.1
+  reply: "بالنسبة لإلغاء الحجز بسبب حالة طبية طارئة، يمكنك تقديم طلب استثناء لفريق خدمة العملاء. ستحتاج إلى تقديم وثيقة طبية تدعم حالتك\
+    \ (مثل تقرير طبي أو شهادة من الطبيب). يمكنك إرفاق الوثيقة في المحادثة باستخدام رمز المشبك، ثم سنقوم بتسجيل طلبك. إذا تمت الموافقة\
+    \ على الطلب، سيتم إصدار المبلغ المسترد وفقًا لسياسة الإلغاء. \n\nهل لديك وثيقة طبية جاهزة للإرفاق؟"
+  hozayfa:
+    faithfulness: null
+    relevance: null
+    completeness: null
+    said_not_covered: null
+    note: ''
+  claude:
+    faithfulness: 2
+    relevance: 4
+    completeness: 2
+    said_not_covered: false
+    note: 'Exception request with a medical document and a refund ''per the cancellation policy'': a process no retrieved clause contains
+      (5.x are reservations, 9.2.1 airline-caused cancellation); shorter and less assertive than the English reply, no citation, does
+      not say the document is silent.'
+  run: generation-20261018-113635
+- id: infant_child_baggage_ar
+  lang: ar
+  answerable: true
+  question: ماذا تقول شروط النقل عن أمتعة الرضّع والأطفال؟
+  retrieved:
+  - '17.0'
+  - 7.4.2
+  - 7.4.4
+  - 7.4.5
+  - 7.7.3
+  - 8.10.1
+  reply: |-
+    وفقًا لشروط النقل الخاصة بفالكون (المادة 7.4.5)، لا يُسمح عادةً بنقل الأطفال الرضع إلا بعد سبعة أيام من ولادتهم. ولمزيد من المعلومات، يمكنك الاستفسار من شركة الطيران أو الوكيل المعتمد.
+
+    بالنسبة للأمتعة، يُنصح بمراجعة اللوائح الخاصة بفالكون (المادة 17.0) والتي تشمل قيودًا على حجم ووزن الأمتعة. يمكنك طلب نسخة من هذه اللوائح إذا لزم الأمر.
+
+    إذا كان لديك أي استفسارات إضافية أو تحتاج إلى مساعدة، فلا تتردد في طلب ذلك.
+  hozayfa:
+    faithfulness: null
+    relevance: null
+    completeness: null
+    said_not_covered: null
+    note: ''
+  claude:
+    faithfulness: 5
+    relevance: 3
+    completeness: 4
+    said_not_covered: false
+    note: Both statements are in the clauses (7.4.5 newborn rule, 17.0 Regulations with size and weight limits) but the newborn rule
+      is not about baggage, and the reply never says the Conditions give no infant or child allowance.
+  run: generation-20261018-113635
+- id: senior_discount_ar
+  lang: ar
+  answerable: false
+  question: هل تقدمون خصمًا لكبار السن؟
+  retrieved:
+  - 10.1.2
+  - 11.5.3
+  - 15.4.2
+  - 16.2.1
+  - 4.1.1
+  - 4.1.3
+  reply: بعد البحث في شروط النقل العامة، لا يوجد بند يذكر خصمًا خاصًا لكبار السن. يمكنك الاطلاع على الأسعار المتاحة من خلال البحث عن
+    الرحلات باستخدام أداة البحث الخاصة بنا. إذا كان لديك أي استفسارات أخرى، فلا تتردد في طرحها.
+  hozayfa:
+    faithfulness: null
+    relevance: null
+    completeness: null
+    said_not_covered: null
+    note: ''
+  claude:
+    faithfulness: 5
+    relevance: 5
+    completeness: 5
+    said_not_covered: true
+    note: Says no clause mentions a senior discount, which is true of everything retrieved, and offers the fare search; nothing invented.
+  run: generation-20261018-113635

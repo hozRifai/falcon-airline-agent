@@ -1,0 +1,127 @@
+# Retrieval gold set over the Conditions of Carriage (Emirates text, used with credit; "Emirates" = Falcon).
+#
+# 20 topics, each asked once in English and once in Arabic (same labels, so the language gap is measured directly).
+# Questions are written the way a customer would ask, not in the document's words, so they test retrieval rather than
+# string matching. Labels: 2 = the clause that answers the question, 1 = also relevant (used by nDCG; recall and hit
+# rate count both). Clause ids are base ids (parts like 7.7.3#2 belong to 7.7.3).
+# `answerable: false` items are not in the document; they are excluded from retrieval metrics and used by the
+# generation evaluation ("say the document does not cover it").
+#
+# status: drafted 17 Oct 2026 from a full read of Articles 3-18; reviewed the same day in a second session (every grade-2
+# clause id checked against its English text and present in both languages of the index). Hozayfa to skim once.
+
+- topic: check_in_deadline
+  relevant: {"6.1": 2, "6.2": 1}
+  en: How early do I have to check in for an economy flight?
+  ar: كم من الوقت قبل الإقلاع يجب أن أكون في مكتب تسجيل الوصول إذا كنت مسافرًا على الدرجة السياحية؟
+
+- topic: pregnancy_30_weeks
+  relevant: {"7.4.1": 2, "7.4.3": 1, "7.4.2": 1}
+  en: I'm 30 weeks pregnant. Can I still fly, and what do I need to bring?
+  ar: أنا حامل في الأسبوع الثلاثين، هل يمكنني السفر؟ وما المستندات المطلوبة مني؟
+
+- topic: newborn
+  relevant: {"7.4.5": 2}
+  en: How soon after giving birth can my baby fly?
+  ar: بعد كم يومًا من الولادة يُسمح لطفلي المولود حديثًا بالسفر؟
+
+- topic: child_travelling_alone
+  relevant: {"7.7.3": 2, "7.7.2": 2, "7.7.1": 1}
+  en: Can my 8-year-old son fly on his own to visit his grandparents?
+  ar: هل يمكن لابني البالغ من العمر ثماني سنوات أن يسافر وحده لزيارة جدّيه؟
+
+- topic: lost_bag_claim_deadline
+  relevant: {"16.1.2": 2, "15.5.4": 1}
+  en: My suitcase never showed up at the destination. How long do I have to file a claim?
+  ar: لم تصل حقيبتي إلى وجهتي، ما المهلة المتاحة لي لتقديم مطالبة؟
+
+- topic: damaged_bag_claim_documents
+  relevant: {"16.2.1": 2, "16.2.2": 2, "16.1.2": 1}
+  en: My bag arrived broken. What do I need to send you to get compensated?
+  ar: وصلت حقيبتي مكسورة، ما الذي يجب أن أقدمه للحصول على تعويض؟
+
+- topic: valuables_in_checked_bag
+  relevant: {"8.3.3": 2, "15.5.2": 1}
+  en: Is it okay to pack my laptop and my jewellery in the suitcase I check in?
+  ar: هل يمكنني وضع حاسوبي المحمول ومجوهراتي في الحقيبة التي أشحنها؟
+
+- topic: airline_cancels_flight
+  relevant: {"9.2.2": 2, "10.2.1": 1, "10.2.2": 1}
+  en: What are my options if the airline cancels my flight?
+  ar: ما الخيارات المتاحة لي إذا ألغت شركة الطيران رحلتي؟
+
+- topic: bumped_from_overbooked_flight
+  relevant: {"9.3.1": 2, "9.3.2": 2, "9.3.3": 1}
+  en: I checked in on time but they wouldn't let me board because the flight was full. What am I entitled to?
+  ar: سجّلت وصولي في الوقت المحدد لكنهم رفضوا صعودي لأن الرحلة ممتلئة، ما الذي يحق لي؟
+
+- topic: refund_time_limit
+  relevant: {"10.4.1": 2}
+  en: Is there a deadline for asking for a refund on a ticket I never used?
+  ar: هل هناك مهلة زمنية لطلب استرداد قيمة تذكرة لم أستخدمها؟
+
+- topic: refund_form_and_currency
+  relevant: {"10.5": 2, "10.1.2": 1}
+  en: Will my refund go back to my card, and in which currency?
+  ar: هل سيُعاد المبلغ المسترد إلى بطاقتي، وبأي عملة؟
+
+- topic: ticket_validity
+  relevant: {"3.2.1": 2}
+  en: How long can I keep an unused ticket before it expires?
+  ar: ما مدة صلاحية التذكرة إذا لم أستخدمها بعد؟
+
+- topic: family_death_before_travel
+  relevant: {"3.3.2": 2, "3.2.4": 1}
+  en: My father passed away and I no longer want to travel. Can I get my money back?
+  ar: توفي والدي ولم أعد أرغب في السفر، هل يمكنني استرداد المبلغ؟
+
+- topic: travelling_with_a_pet
+  relevant: {"8.10": 2, "8.10.1": 2, "8.10.2": 1, "8.10.3": 1, "8.2": 1}
+  en: Can I bring my cat on the trip with me?
+  ar: هل يمكنني اصطحاب قطتي معي في الرحلة؟
+
+- topic: hunting_rifle
+  relevant: {"8.4.2": 2, "8.4.1": 2}
+  en: I want to take my hunting rifle. What do I need to do?
+  ar: أريد أن آخذ بندقية الصيد الخاصة بي، ما الإجراءات المطلوبة؟
+
+- topic: own_alcohol_on_board
+  relevant: {"11.2": 2}
+  en: Can I open the bottle of whisky I bought at duty free during the flight?
+  ar: هل يمكنني فتح زجاجة المشروب التي اشتريتها من السوق الحرة وشربها أثناء الرحلة؟
+
+- topic: refused_entry_costs
+  relevant: {"13.2.1": 2, "13.3": 2, "13.2.2": 1}
+  en: If immigration doesn't let me into the country when I land, who pays for my flight back?
+  ar: إذا رفضت سلطات الهجرة دخولي إلى البلد عند الوصول، من يتحمل تكلفة رحلة العودة؟
+
+- topic: fitness_to_fly_after_surgery
+  relevant: {"7.3.2": 2, "7.3.1": 1, "5.1.2": 1}
+  en: I had an operation two weeks ago. What do I need to show that I'm fit to fly?
+  ar: أجريت عملية جراحية قبل أسبوعين، ما الذي يجب أن أقدمه لإثبات أنني لائق للسفر جوًا؟
+
+- topic: instrument_in_cabin
+  relevant: {"8.8.2": 2, "8.8.1": 1}
+  en: My cello is too big for the overhead bin. How can I keep it with me in the cabin?
+  ar: آلة التشيلو الخاصة بي أكبر من الخزانة العلوية، كيف يمكنني إبقاؤها معي في المقصورة؟
+
+- topic: missed_outbound_return_cancelled
+  relevant: {"5.7.1": 2, "5.7.2": 2, "3.4.4": 1}
+  en: I missed my outbound flight. Is my return flight still valid?
+  ar: فاتتني رحلة الذهاب، هل ما زالت رحلة العودة صالحة؟
+
+- topic: student_discount
+  answerable: false
+  en: Do you have discounts for students?
+
+- topic: loyalty_miles
+  answerable: false
+  en: How many loyalty miles will I earn on a flight to London?
+
+- topic: senior_discount
+  answerable: false
+  ar: هل تقدمون خصمًا لكبار السن؟
+
+- topic: upgrade_price
+  answerable: false
+  ar: كم يكلف ترقية مقعدي إلى درجة رجال الأعمال؟

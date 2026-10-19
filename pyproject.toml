@@ -1,0 +1,50 @@
+[project]
+name = "falcon"
+version = "0.1.0"
+description = "Falcon Airline customer-service agent: LangGraph runtime, MCP servers, deterministic rules, bilingual policy search, evaluation harness."
+requires-python = ">=3.12"
+dependencies = [
+  "mcp==1.30.0",                       # 2.x renamed FastMCP and breaks langchain-mcp-adapters; stay on 1.x
+  "langgraph==1.2.15",
+  "langchain==1.4.6",
+  "langchain-openai==1.7.2",           # OpenRouter is OpenAI-compatible: one client for any model
+  "langchain-anthropic",               # optional direct provider
+  "langchain-mcp-adapters==0.3.2",
+  "langgraph-checkpoint-postgres==3.2.0",
+  "psycopg[binary,pool]",
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic>=2",
+  "pydantic-settings",
+  "sqlglot==30.23.0",                  # parses the ops agent's SQL before the database ever sees it
+  "pymupdf==1.28.2",
+  "PyJWT[crypto]",
+  "httpx",
+  "pyyaml",
+  "openai",
+  "python-multipart",
+  "sse-starlette",
+  "azure-identity",                    # Entra ID app-only tokens between the runtime and the MCP servers (AUTH_MODE=entra)
+  # Tracing (decision #27): OpenTelemetry once, any backend (Phoenix locally, Langfuse, any OTLP collector)
+  "opentelemetry-sdk",
+  "opentelemetry-exporter-otlp-proto-http",
+  "opentelemetry-instrumentation-asgi",
+  "opentelemetry-instrumentation-httpx",
+  "opentelemetry-instrumentation-psycopg",
+  "openinference-instrumentation-langchain==0.1.79",
+  "tzdata",                            # IANA zones for ZoneInfo on Windows and slim images (airports.tz)
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

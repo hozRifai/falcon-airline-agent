@@ -1,0 +1,28 @@
+# Extra questions for the generation evaluation (docs/EVALUATION.md §4), beyond the retrieval gold set: the two policy answers that
+# failed on the laptop on 18 Oct. Same shape as eval/retrieval/gold.yaml (relevant: 2 = answers it, 1 = also relevant), but these are
+# not part of the retrieval metrics. The `note` says what a right answer looks like, for the person labelling.
+#
+# Both questions are only partly covered by the Conditions, on purpose: the judge must reward a reply that says so and cites what
+# does apply, and punish one that fills the gap from memory.
+
+- topic: medical_emergency_cancellation
+  relevant: {"3.3.1": 2, "10.3.1": 2, "10.3": 1}
+  en: What is the policy when cancellation is due to a medical emergency?
+  ar: ما هي السياسة عندما يكون إلغاء الحجز بسبب حالة طبية طارئة؟
+  note: |
+    The Conditions have no medical-emergency clause. What applies: 3.3.1 (prevented from travelling by Force Majeure before travel:
+    a credit for the non-refundable part of the fare, usable for 12 months, with satisfactory evidence) and 10.3.1 (a voluntary refund
+    is the fare less the applicable fees). Fees themselves come from the fare rules, and Falcon logs an exception case with the doctor's
+    note attached. A right answer says the document does not single out medical emergencies, cites what does apply, and points to the
+    fare rules or a case; a wrong one cites death-in-the-family (3.3.2) or fitness-to-fly clauses as if they decided the refund, or
+    invents a medical-waiver rule. On 18 Oct the agent cited three unrelated clauses for this question.
+
+- topic: infant_child_baggage
+  relevant: {"8.1": 2, "8.2": 1}
+  en: What do the conditions of carriage say about baggage for infants and children?
+  ar: ماذا تقول شروط النقل عن أمتعة الرضّع والأطفال؟
+  note: |
+    The Conditions give no infant or child allowance: 8.1 says the free allowance is the one shown on the ticket and depends on the
+    Regulations in force; 8.2 is the excess charge. A right answer says the document does not specify an allowance for infants or
+    children, cites 8.1, and offers the fare rules of the booking (get_fare_rules) or a human agent; a wrong one states kilos or a
+    stroller rule the document does not contain (the 17-18 Oct runs did both).
