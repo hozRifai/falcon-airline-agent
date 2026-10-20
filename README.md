@@ -58,18 +58,38 @@ The scripts are thin wrappers over compose; the underlying commands are `docker 
 Cloud deployment is not part of the demo (decision #42): the same image runs anywhere a container, Postgres with pgvector
 and an OTLP collector are available; identity between services is the dev secret locally or Entra ID (`AUTH_MODE=entra`).
 
+## Voice agent
+
+The same agent on a call (Pipecat): the browser's microphone goes over WebRTC to a voice bot that transcribes with Deepgram Nova-3
+(Arabic or English, one per call, the app's language), sends each finished turn to the runtime's `/api/chat` with the caller's own
+session token, and speaks the reviewed reply with ElevenLabs. It is a front end, not a second agent: the guard, the tools, the
+reviewer, the confirmation gate and the traces are the chat's. What is spoken follows four fixed rules: only the reviewed reply
+(never the token stream); a fixed progress phrase when the reply is slow; the confirmation card read aloud, answered with a bare
+"yes" / «نعم» (anything else repeats it once, then declines); codes and amounts normalised for speech. In the app, the
+conversation has a Chat | Voice switch; the voice view is a call screen with live meters, and every spoken turn also appears in the
+chat with its badges and trace id.
+
+```bash
+# DEEPGRAM_API_KEY and ELEVENLABS_API_KEY in .env (see .env.example), then:
+scripts/up.sh --voice   # the stack plus the voice bot on the laptop (http://localhost:7860; WebRTC media cannot enter Docker Desktop on Windows)
+```
+
+Then pick a customer in the app, switch to Voice and press the microphone (Chrome; allow the microphone). Tools: `scripts/voice_talk.py`
+(the voice logic over text, no audio), `python -m falcon.eval.voice_tasks` (five tasks through the voice path, graded like the chat
+tasks), `scripts/voice_latency.py` and `scripts/voice_stt_compare.py` (latency and word error rate from a call's log).
+
 ## Layout
 
 ```
 db/            schema.sql (4 schemas, least-privilege roles), seed.py (Dubai network, personas), apply.py
 data/policy/   the two Conditions of Carriage PDFs (EN, AR)
 src/falcon/core        config, clock, db, auth, rules engine, Arabic helpers, MCP server plumbing
-src/falcon/services    legacy_flight_api, mcp_reservations, mcp_flightops, mcp_policy, runtime (FastAPI + LangGraph)
+src/falcon/services    legacy_flight_api, mcp_reservations, mcp_flightops, mcp_policy, runtime (FastAPI + LangGraph), voice (Pipecat bot)
 src/falcon/policy      parse_coc (EN/AR PDFs, ligature repair), search (dense, pgvector), rewrite (measured, off), embeddings
 src/falcon/eval        tasks, simulator, runner, scoring (pass^k)
 eval/tasks/            task YAML (EN, AR, adversarial)
 scripts/               reset.sh, up.sh, eval.sh, talk.py (Docker), dev.sh (no Docker), ingest_policy.py
-web/                   React/Vite/Tailwind app (EN/AR, RTL)
+web/                   React/Vite/Tailwind app (EN/AR, RTL; Chat and Voice views)
 tests/                 unit and live tests
 ```
 

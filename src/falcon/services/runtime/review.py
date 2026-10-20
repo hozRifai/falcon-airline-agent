@@ -451,7 +451,7 @@ async def citation_support(draft: AIMessage, messages: list[AnyMessage]) -> Revi
     text = text_of(draft)
     tools, _ = trace(messages)
     texts = clause_texts(tools)
-    items = [{"clause_id": cid, "clause_text": texts[cid][:2500], "reply_sentences": citing_sentences(text, cid)}
+    items = [{"clause_id": cid, "clause_text": texts.get(cid, "")[:2500], "reply_sentences": citing_sentences(text, cid)}
              for cid in cited_clause_ids(text) if cid in texts or any(k.startswith(cid + ".") for k in texts)]
     for it in items:  # a cited parent ("7.4") is judged against its retrieved children's text
         if it["clause_text"] == "" or it["clause_id"] not in texts:

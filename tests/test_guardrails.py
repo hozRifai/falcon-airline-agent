@@ -106,7 +106,7 @@ def test_a_card_number_is_removed_before_the_model_and_the_agent_is_told():
 
 
 def test_social_engineering_reaches_the_agent_with_a_note(monkeypatch):
-    async def fake_llm(text: str):
+    async def fake_llm(text: str, context=None):
         return g.SOCIAL, "claims to be staff"
     monkeypatch.setattr(settings, "guardrail_llm", True)
     monkeypatch.setattr(settings, "openrouter_api_key", "test")
@@ -121,7 +121,7 @@ def test_a_classifier_outage_fails_open_for_the_label_and_closed_for_the_documen
     """The label fails open (the message reaches the agent); a question still gets the document floor (FAILURE_DIARY #60)."""
     from falcon.services.runtime.review import HELD
 
-    async def broken(text: str):
+    async def broken(text: str, context=None):
         raise TimeoutError("no answer in 8 s")
     monkeypatch.setattr(settings, "guardrail_llm", True)
     monkeypatch.setattr(settings, "openrouter_api_key", "test")
@@ -211,7 +211,7 @@ def test_a_disclosure_is_recorded_and_the_agent_is_told_to_check_first():
 
 
 def test_model_disclosures_are_merged_after_the_pattern_layer(monkeypatch):
-    async def fake_llm(text: str):
+    async def fake_llm(text: str, context=None):
         return g.TASK, "travel facts", [g.Disclosure(kind="other", detail="late father's ashes in hand luggage", check="carriage of human remains or ashes", source="llm"),
                                         g.Disclosure(kind="pregnancy", detail="pregnant (the model saw it too)", check="x", source="llm")]
     monkeypatch.setattr(settings, "guardrail_llm", True)
@@ -261,7 +261,7 @@ def test_a_question_with_the_classifier_down_is_treated_as_a_rules_question(monk
     monkeypatch.setattr(gr.settings, "guardrail_llm", True)
     monkeypatch.setattr(gr.settings, "openrouter_api_key", "x")
 
-    async def boom(_probe):
+    async def boom(_probe, context=None):
         raise RuntimeError("429 upstream")
 
     monkeypatch.setattr(gr, "classify_by_llm", boom)
@@ -279,16 +279,65 @@ def test_the_classifier_names_a_topic_and_unknown_topics_fall_back_to_general(mo
     monkeypatch.setattr(gr.settings, "guardrail_llm", True)
     monkeypatch.setattr(gr.settings, "openrouter_api_key", "x")
 
-    async def says(_probe):
+    async def says(_probe, context=None):
         return ("task", "wants baggage", [], False, "baggage")
 
     monkeypatch.setattr(gr, "classify_by_llm", says)
     _, g = asyncio.run(gr.guard("add 10 kg to K3P7QZ", "en"))
     assert g.topic == "baggage" and g.source == "llm"
 
-    async def odd(_probe):
+    async def odd(_probe, context=None):
         return ("task", "?", [], False, "general")
 
     monkeypatch.setattr(gr, "classify_by_llm", odd)
     _, g = asyncio.run(gr.guard("hello there", "en"))
     assert g.topic == "general"
+
+
+# ---------------------------------------------------------------- decision #51: the classifier reads the previous reply
+def test_the_classifier_input_carries_the_previous_reply_only_when_there_is_one():
+    from falcon.services.runtime import guardrails as gr
+    system, content = gr.classifier_input("والثاني؟", None)
+    assert system == gr.CLASSIFIER_PROMPT and content == "والثاني؟"  # the labelled set and first messages: unchanged
+    system, content = gr.classifier_input("والثاني؟", "x" * 900 + " You have two bookings: K3P7QZ and B4N6WX. Which one?")
+    assert system.endswith(gr.CONTEXT_RULE) and "Which one?" in content and content.endswith("<<<والثاني؟>>>")
+    assert len(content) < gr.CONTEXT_CHARS + 120  # only the end of a long reply
+
+
+def test_previous_reply_is_the_last_assistant_text_before_the_latest_message():
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from falcon.services.runtime.graph import previous_reply
+    msgs = [HumanMessage(content="my bookings"), AIMessage(content="", tool_calls=[{"name": "list_my_bookings", "args": {}, "id": "1"}]),
+            ToolMessage(content="[]", tool_call_id="1", name="list_my_bookings"), AIMessage(content="You have two bookings. Which one?"),
+            HumanMessage(content="the second")]
+    assert previous_reply(msgs) == "You have two bookings. Which one?"
+    assert previous_reply([HumanMessage(content="hello")]) is None
+
+
+async def test_guard_hands_the_context_to_the_classifier(monkeypatch):
+    from falcon.services.runtime import guardrails as gr
+    seen = {}
+
+    async def says(probe, context=None):
+        seen["context"] = context
+        return "task", "follow-up", [], False, "bookings"
+    monkeypatch.setattr(gr, "classify_by_llm", says)
+    monkeypatch.setattr(gr.settings, "guardrail_llm", True)
+    monkeypatch.setattr(gr.settings, "openrouter_api_key", "test")
+    _, g = await gr.guard("the second", "en", "Which booking?")
+    assert seen["context"] == "Which booking?" and g.label == "task" and g.topic == "bookings"
+
+
+async def test_the_classifier_budget_leaves_room_after_the_model_reasons(monkeypatch):
+    # FAILURE_DIARY #72: 834 hidden reasoning tokens against max_tokens=700 left an empty answer and an "unknown" label
+    from falcon.services.runtime import guardrails as gr
+    seen = {}
+
+    class Completions:
+        async def create(self, **kw):
+            seen.update(kw)
+            from types import SimpleNamespace as N
+            return N(choices=[N(message=N(content='{"label": "task", "reason": "x", "topic": "bookings"}'), finish_reason="stop")])
+    monkeypatch.setattr(gr, "_llm_client", lambda: type("C", (), {"chat": type("Ch", (), {"completions": Completions()})()})())
+    await gr.classify_by_llm("آآه، هل لي هنا تكالب مع الـ director again؟", "هل تودين أن أبحث لك عن رحلة؟")
+    assert seen["max_tokens"] >= 834 + 200

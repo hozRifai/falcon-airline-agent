@@ -38,7 +38,7 @@ from falcon.core.mcp_client import client_for
 from falcon.core.telemetry import current_ids, link_to, setup_tracing, tracer
 
 from .guardrails import guard as guard_message
-from .graph import build_graph
+from .graph import build_graph, previous_reply
 from .llm import make_chat_model, model_label
 from .personas import API_TOOLS, ROLE_PROFILES, get_persona, list_personas
 
@@ -298,10 +298,16 @@ async def _run_turn(user: UserContext, thread: str, graph_input: Any, verbose: b
     # fetched; the guard node reuses the verdict when the text matches, and classifies itself otherwise.
     pre_task = None
     said_now = ""
+    context = None
     if isinstance(graph_input, dict) and graph_input.get("messages"):
         said_now = _text(graph_input["messages"][-1].content)
         if said_now.strip() and not said_now.startswith("[[opening]]"):
-            pre_task = asyncio.create_task(guard_message(said_now, preferred_reply_language(said_now, user.lang)))
+            try:  # decision #51: the classifier reads the assistant's previous reply; one checkpoint read, no model call
+                snapshot = await state["graph"].aget_state({"configurable": {"thread_id": f"{user.session_id}:{thread}"}})
+                context = previous_reply((snapshot.values or {}).get("messages", []) + list(graph_input["messages"]))
+            except Exception as exc:  # noqa: BLE001 - without it the guard node classifies with the context itself
+                log.warning("could not read the thread for the classifier's context: %s", exc)
+            pre_task = asyncio.create_task(guard_message(said_now, preferred_reply_language(said_now, user.lang), context))
     try:
         tools = await tools_for(user)
     except Exception:  # noqa: BLE001 - an MCP server down must not leave the chat hanging without a final event
@@ -318,7 +324,7 @@ async def _run_turn(user: UserContext, thread: str, graph_input: Any, verbose: b
     if pre_task:
         try:
             clean, g = await pre_task
-            config["configurable"]["guard_precomputed"] = {"text": said_now, "clean": clean, "guard": g}
+            config["configurable"]["guard_precomputed"] = {"text": said_now, "context": context, "clean": clean, "guard": g}
         except Exception as exc:  # noqa: BLE001 - the guard node classifies itself then
             log.warning("precomputed guardrail failed, the guard node will classify: %s", exc)
     graph = state["graph"]
@@ -550,7 +556,9 @@ if WEB_DIST.exists():
         candidate = WEB_DIST / path
         if path and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(WEB_DIST / "index.html")
+        # the page must be revalidated on every load: it names the hashed bundles, and a cached copy kept showing the previous
+        # build after a rebuild (FAILURE_DIARY #71); the bundles themselves are content-hashed and may be cached
+        return FileResponse(WEB_DIST / "index.html", headers={"Cache-Control": "no-cache"})
 else:
 
     @app.get("/")

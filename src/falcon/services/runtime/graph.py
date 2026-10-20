@@ -178,6 +178,17 @@ async def prepare(state: AgentState, config: RunnableConfig) -> dict:
     return {"lang": lang, "turn_log": [], "turn_tool_calls": 0, "pending": None, "verification": None}
 
 
+def previous_reply(messages: list[AnyMessage]) -> str | None:
+    """The assistant's last text reply before the customer's latest message: the classifier's context (decision #51)."""
+    msgs = list(messages or [])
+    last_human = max((i for i, m in enumerate(msgs) if isinstance(m, HumanMessage)), default=None)
+    scope = msgs[:last_human] if last_human is not None else msgs
+    for m in reversed(scope):
+        if isinstance(m, AIMessage) and _text_of(m).strip():
+            return _text_of(m)
+    return None
+
+
 async def guard(state: AgentState, config: RunnableConfig) -> dict:
     """Input guardrail (decision #29). The app's opening message is not a customer message and is not classified."""
     last = next((m for m in reversed(state.get("messages", [])) if isinstance(m, HumanMessage)), None)
@@ -186,10 +197,11 @@ async def guard(state: AgentState, config: RunnableConfig) -> dict:
         return {"guardrail": None}
     lang = state.get("lang", "en")
     pre = config["configurable"].get("guard_precomputed")  # the API ran the classifier while it fetched the tools (decision #47)
-    if pre and pre.get("text") == text:
+    context = previous_reply(state.get("messages", []))
+    if pre and pre.get("text") == text and pre.get("context") == context:
         clean, g = pre["clean"], pre["guard"]
     else:
-        clean, g = await guard_message(text, lang)
+        clean, g = await guard_message(text, lang, context)
     record = g.to_dict()
     prior = list(state.get("disclosed") or [])
     kinds = list(dict.fromkeys(d.kind for d in g.disclosures))
@@ -209,31 +221,26 @@ async def guard(state: AgentState, config: RunnableConfig) -> dict:
 # A bare "yes" after a quote is not a judgement (decision #41): the runtime raises the confirmation card itself. DeepSeek, asked in
 # Arabic, wrote "I will cancel now, press the confirm button" instead of calling the tool often enough that the Arabic customer saw
 # the cut-off message and no card (FAILURE_DIARY #53).
-CONFIRM_CORE = {"yes", "yeah", "yep", "ok", "okay", "sure", "confirm", "confirmed", "proceed", "agreed",
-                "نعم", "أجل", "اجل", "موافق", "موافقة", "أوافق", "اوافق", "تمام", "أكد", "تأكيد", "تابع", "نفذ", "حسنا", "طيب", "ماشي"}
-CONFIRM_FILLER = {"please", "go", "ahead", "do", "it", "that", "with", "the", "and", "sure", "fine", "thanks", "thank", "you", "cancel", "cancellation", "change", "booking", "book", "bag",
-                  "من", "فضلك", "لو", "سمحت", "الإلغاء", "الالغاء", "بالإلغاء", "بالالغاء", "التغيير", "بالتغيير", "الحجز", "بالحجز", "المتابعة", "ذلك", "هذا", "شكرا", "شكرًا", "اعمل", "افعل", "أكمل", "اكمل", "كمل"}
-_WORD_RE = re.compile(r"\w+")
-_TASHKEEL_RE = re.compile("[ً-ْـ]")  # diacritics and tatweel: "حسنًا" is "حسنا"
-
-
-def is_bare_confirmation(text: str) -> bool:
-    """True for a message that only says yes (EN / AR), with at most filler words around it: nothing new to decide."""
-    words = [w.lower() for w in _WORD_RE.findall(_TASHKEEL_RE.sub("", text or ""))]
-    return bool(words) and any(w in CONFIRM_CORE for w in words) and all(w in CONFIRM_CORE or w in CONFIRM_FILLER for w in words)
+# The vocabulary lives in falcon.core.confirmation so the voice channel uses the very same words (VOICE_PLAN rule 3).
+from falcon.core.confirmation import CONFIRM_CORE, CONFIRM_FILLER, is_bare_confirmation  # noqa: E402,F401
 
 
 QUOTE_ACTION = {"cancel": "cancel_booking", "change": "change_booking", "bag": "add_extra_bag", "book": "create_booking"}
 
 
+OFFER_KEYS = ("kind", "pnr", "refund_method", "refund", "fee", "amount_due", "details")
+
+
 def open_quote(messages: list[AnyMessage], this_turn: bool = False) -> dict | None:
     """The allowed quote the assistant presented in its last turn (or, with this_turn, since the customer's last message), when no
-    write has consumed it yet; None otherwise."""
+    write has consumed it yet; None otherwise. Two different offers in that turn (credit or card, two flights) are a question, not
+    a quote: None, so no shortcut picks one (FAILURE_DIARY #65); the same offer quoted again counts once, and the latest is kept."""
     scope = messages if this_turn else messages[:-1]
     last_human = max((i for i, m in enumerate(scope) if isinstance(m, HumanMessage)), default=None)
     if last_human is None:
         return None
     quote = None
+    offers: set[str] = set()
     for m in scope[last_human + 1:]:
         if isinstance(m, ToolMessage) and (m.name or "").startswith("quote_"):
             try:
@@ -242,7 +249,8 @@ def open_quote(messages: list[AnyMessage], this_turn: bool = False) -> dict | No
                 continue
             if isinstance(data, dict) and data.get("allowed") and data.get("quote_id") and data.get("kind") in QUOTE_ACTION:
                 quote = data
-    if not quote:
+                offers.add(json.dumps({k: data.get(k) for k in OFFER_KEYS}, sort_keys=True, default=str))
+    if not quote or len(offers) > 1:
         return None
     consumed = any(isinstance(m, ToolMessage) and (m.name or "") == QUOTE_ACTION[quote["kind"]] and quote["quote_id"] in _text_of(m) for m in messages)
     return None if consumed else quote
