@@ -33,10 +33,13 @@ dependencies = [
   "opentelemetry-instrumentation-psycopg",
   "openinference-instrumentation-langchain==0.1.79",
   "tzdata",                            # IANA zones for ZoneInfo on Windows and slim images (airports.tz)
+  "num2words",                         # the voice channel's speech normaliser (amounts as words, EN and AR)
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]
+# The voice channel (docs/VOICE_PLAN.md) runs on the laptop, outside Docker: see scripts/voice.sh
+voice = ["pipecat-ai[webrtc,deepgram,elevenlabs,runner]==1.13.0"]
 
 [build-system]
 requires = ["setuptools>=68"]

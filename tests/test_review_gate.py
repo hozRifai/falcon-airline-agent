@@ -579,3 +579,40 @@ def test_the_guard_node_reuses_a_precomputed_verdict_for_the_same_text():
     asyncio.run(graph.ainvoke({"messages": [HumanMessage(content="add 10 kg to K3P7QZ")], "role": "customer", "user_name": "Test", "preferred_lang": "en"}, config))
     values = asyncio.run(graph.aget_state(config)).values
     assert values["guardrail"]["source"] == "llm" and values["guardrail"]["topic"] == "baggage"  # the node did not classify again
+
+
+def test_citation_support_judges_a_cited_parent_against_its_retrieved_children(monkeypatch):
+    # FAILURE_DIARY #67: a reply citing "7.4" when only 7.4.1 was retrieved raised KeyError, and the turn became "model unavailable"
+    import asyncio as _asyncio
+    from falcon.services.runtime import review as rv
+    clause = json.dumps({"results": [{"clause_id": "7.4.1", "text_en": "Expectant mothers may travel up to the end of the 36th week."}]})
+    msgs = [HumanMessage(content="I'm pregnant, can I fly?"), ToolMessage(content=clause, tool_call_id="1", name="search_policy")]
+    seen = {}
+
+    class Stub:
+        async def ainvoke(self, msgs_in):
+            seen["items"] = json.loads(msgs_in[1].content)["items"]
+            return AIMessage(content=json.dumps({"items": [{"clause_id": "7.4", "supported": True, "reason": "matches"}]}))
+    monkeypatch.setattr(rv, "_reviewer", lambda: Stub())
+    out = _asyncio.run(rv.citation_support(AIMessage(content="Under clause 7.4 you may fly until the end of week 36."), msgs))
+    assert out.ok and seen["items"][0]["clause_id"] == "7.4" and "36th week" in seen["items"][0]["clause_text"]
+
+
+def test_a_bare_yes_to_two_offers_raises_no_card():
+    # FAILURE_DIARY #65: the agent quoted credit (1291, fee 100) and card (1091, fee 300) and asked which; a bare "نعم" raised the
+    # card for the last quote, the dearer one. Two different offers on the table: the model must ask, no shortcut may choose.
+    from falcon.services.runtime.graph import card_shortcut, confirmation_shortcut, open_quote
+    credit = ToolMessage(content=json.dumps({"kind": "cancel", "pnr": "K3P7QZ", "allowed": True, "fee": "100.00", "refund": "1291.00", "refund_method": "credit", "currency": "AED", "quote_id": "Q-C"}), tool_call_id="1", name="quote_cancellation")
+    card = ToolMessage(content=json.dumps({"kind": "cancel", "pnr": "K3P7QZ", "allowed": True, "fee": "300.00", "refund": "1091.00", "refund_method": "original", "currency": "AED", "quote_id": "Q-O"}), tool_call_id="2", name="quote_cancellation")
+    calls = AIMessage(content="", tool_calls=[{"name": "quote_cancellation", "args": {"pnr": "K3P7QZ", "refund_method": "credit"}, "id": "1"},
+                                              {"name": "quote_cancellation", "args": {"pnr": "K3P7QZ", "refund_method": "original"}, "id": "2"}])
+    asked = AIMessage(content="رصيد سفر: 1291.00 AED برسوم 100.00، أو إلى البطاقة: 1091.00 AED برسوم 300.00. أي طريقة تفضلين؟")
+    msgs = [HumanMessage(content="أريد إلغاء حجزي K3P7QZ"), calls, credit, card, asked, HumanMessage(content="نعم")]
+    assert open_quote(msgs) is None
+    assert confirmation_shortcut({"messages": msgs}) is None
+    # the "press confirm" shortcut does not choose either
+    assert card_shortcut({"messages": msgs[:4]}, AIMessage(content="اضغطي على زر التأكيد")) is None
+    # the same offer quoted twice (a refreshed quote) is still one offer: the latest one is confirmed
+    again = ToolMessage(content=json.dumps({"kind": "cancel", "pnr": "K3P7QZ", "allowed": True, "fee": "100.00", "refund": "1291.00", "refund_method": "credit", "currency": "AED", "quote_id": "Q-C2"}), tool_call_id="3", name="quote_cancellation")
+    one = [HumanMessage(content="أريد إلغاء حجزي K3P7QZ"), calls, credit, again, AIMessage(content="هل تؤكدين؟"), HumanMessage(content="نعم")]
+    assert confirmation_shortcut({"messages": one})["args"]["quote_id"] == "Q-C2"

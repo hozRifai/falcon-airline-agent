@@ -1,10 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, chat, confirmAction, openChat, type Done, type Guardrail, type Pending, type ReviewEvent, type ToolEntry, type Verification } from './api'
+import { useCall } from './Call'
+import VoiceStage from './VoiceStage'
 import { isArabic, type Dict } from './i18n'
 
-type Msg = { role: 'user' | 'assistant'; text: string; checked?: ToolEntry[]; meta?: { latency_ms: number; model: string; usage: Done['usage'] }; verification?: Verification | null; guardrail?: Guardrail | null; turnId?: number | null; traceId?: string | null }
+type Msg = { role: 'user' | 'assistant'; text: string; checked?: ToolEntry[]; meta?: { latency_ms: number; model: string; usage: Done['usage'] }; verification?: Verification | null; guardrail?: Guardrail | null; turnId?: number | null; traceId?: string | null; voice?: boolean }
 type Live = { text: string; checked: ToolEntry[]; review?: ReviewEvent | null }
 const WRITES = new Set(['cancel_booking', 'change_booking', 'add_extra_bag', 'request_exception'])
+// the first `fraction` of a text's words, whitespace and line breaks kept: a spoken reply appears as it is said
+export const revealText = (text: string, fraction: number | null | undefined) => {
+  if (fraction == null || fraction >= 1) return text
+  const parts = text.split(/(\s+)/)
+  const total = parts.filter((p) => p.trim()).length
+  let keep = Math.ceil(total * Math.max(0, fraction)), out = ''
+  for (const p of parts) { if (p.trim()) { if (keep-- <= 0) break } out += p }
+  return out.trimEnd()
+}
 
 export default function Chat({ t, role, lang, prefill, onPrefillUsed, openKey, onWrite }: { t: Dict; role: string; lang: string; prefill?: string; onPrefillUsed?: () => void; openKey?: number; onWrite?: () => void }) {
   const [thread, setThread] = useState(() => localStorage.getItem('falcon.thread') || 'main')
@@ -28,6 +39,25 @@ export default function Chat({ t, role, lang, prefill, onPrefillUsed, openKey, o
   useEffect(() => { if (openKey) { setMessages([]); setPending(null); run((ev) => openChat(thread, ev, lang)) } }, [openKey, lang])  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { bottom.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, live, pending])
 
+  // a finished turn, typed or spoken (voice phase 2: the call's turns are drawn by the same code, with the same badges and trace)
+  const applyDone = (d: Done, voice = false) => {
+    if (d.message) setMessages((m) => [...m, { role: 'assistant', text: d.message, checked: d.what_i_checked, meta: { latency_ms: d.latency_ms, model: d.model, usage: d.usage }, verification: d.verification, guardrail: d.guardrail, turnId: d.turn_id, traceId: d.trace_id, voice }])
+    else if (!d.pending && d.what_i_checked.length) setMessages((m) => [...m, { role: 'assistant', text: '', checked: d.what_i_checked, voice }])
+    setPending(d.pending)
+    if (d.what_i_checked.some((e) => e.ok && WRITES.has(e.tool))) onWrite?.()  // the trips panel reloads after a cancellation, change or bag
+  }
+  // two ways to show the same conversation: the chat (transcript, badges, cards) and the voice view (a call: microphone, meters)
+  const [mode, setMode] = useState<'chat' | 'voice'>(() => (localStorage.getItem('falcon.mode') === 'voice' ? 'voice' : 'chat'))
+  const switchMode = (m: 'chat' | 'voice') => { setMode(m); localStorage.setItem('falcon.mode', m) }
+  const [interim, setInterim] = useState<string | null>(null)  // the customer's words while they speak on a call
+  const [reveal, setReveal] = useState<number | null>(null)     // how much of the latest spoken reply has been said
+  const call = useCall({
+    onUser: (text) => { setPending(null); setMessages((m) => [...m, { role: 'user', text, voice: true }]) },
+    onDone: (d) => { if (d.message) setReveal(0); applyDone(d, true) },  // shown as it is spoken, from the first word
+    onInterim: setInterim,
+    onReveal: (f) => setReveal(f >= 1 ? null : f),
+  })
+
   const run = (fn: (ev: Parameters<typeof chat>[2]) => Promise<void>) => {
     setBusy(true); setError(null); setLive({ text: '', checked: [] })
     return fn({
@@ -36,30 +66,14 @@ export default function Chat({ t, role, lang, prefill, onPrefillUsed, openKey, o
       // the reviewer sent the streamed draft back: drop it and say why; the next draft streams in its place
       onReview: (r) => setLive((l) => ({ text: '', checked: l?.checked || [], review: r })),
       onConfirm: (p) => setPending(p),
-      onDone: (d) => {
-        setLive(null); setBusy(false)
-        if (d.message) setMessages((m) => [...m, { role: 'assistant', text: d.message, checked: d.what_i_checked, meta: { latency_ms: d.latency_ms, model: d.model, usage: d.usage }, verification: d.verification, guardrail: d.guardrail, turnId: d.turn_id, traceId: d.trace_id }])
-        else if (!d.pending && d.what_i_checked.length) setMessages((m) => [...m, { role: 'assistant', text: '', checked: d.what_i_checked }])
-        setPending(d.pending)
-        if (d.what_i_checked.some((e) => e.ok && WRITES.has(e.tool))) onWrite?.()  // the trips panel reloads after a cancellation, change or bag
-      },
+      onDone: (d) => { setLive(null); setBusy(false); applyDone(d) },
       onError: (e) => { setLive(null); setBusy(false); setError(e) },
     })
   }
 
-  const fileRef = useRef<HTMLInputElement>(null)
-  const [uploading, setUploading] = useState(false)
-  const attach = async (f: File | undefined) => {
-    // the paperclip (decision #33): upload, then tell the agent in the customer's words so it can carry on (list_my_attachments)
-    if (!f) return
-    setUploading(true)
-    try { const r = await api.upload(f); send(t.attached.replace('{name}', r.filename)) }
-    catch (e: any) { setError(String(e?.message ?? e)) }
-    finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
-  }
   const send = (text?: string) => {
     const msg = (text ?? input).trim()
-    if (!msg || busy) return
+    if (!msg || busy || call.active) return
     setInput('')
     setMessages((m) => [...m, { role: 'user', text: msg }])
     run((ev) => chat(msg, thread, ev, lang))
@@ -67,10 +81,30 @@ export default function Chat({ t, role, lang, prefill, onPrefillUsed, openKey, o
   const decide = (approved: boolean) => { setPending(null); run((ev) => confirmAction(approved, approved ? '' : t.declinedNote, thread, ev)) }
   const newChat = () => { const id = 't' + Date.now().toString(36); localStorage.setItem('falcon.thread', id); setThread(id); setMessages([]); setPending(null) }
 
+  const lastIdx = messages.length - 1
+  const liveReveal = (i: number) => (i === lastIdx && messages[i]?.voice && messages[i]?.role === 'assistant' ? reveal : null)
+  const lastI = messages.map((m) => !!m.text).lastIndexOf(true)
+  const last = lastI >= 0 ? messages[lastI] : null
   return (
     <div className="flex flex-col h-full">
+      <div className="flex justify-center gap-1 p-1.5 border-b border-sand-200 bg-white">
+        {(['chat', 'voice'] as const).map((m) => (
+          <button key={m} className={`chip px-3 py-1 text-sm ${mode === m ? 'bg-navy-800 text-white' : 'bg-sand-100 text-navy-800 hover:bg-sand-200'}`} onClick={() => switchMode(m)}>
+            {m === 'chat' ? `💬 ${t.modeChat}` : `🎙 ${t.modeVoice}`}
+          </button>
+        ))}
+      </div>
+      {mode === 'voice' ? (
+        <div className="flex-1 min-h-0">
+          <VoiceStage t={t} state={call.state} error={call.error} micStream={call.micStream} botStream={call.botStream}
+            onStart={() => call.start(thread, lang)} onStop={() => call.stop()}
+            caption={interim ? { who: 'user', text: interim } : last ? { who: last.role, text: revealText(last.text, liveReveal(lastI)) } : null}
+            card={pending ? <ConfirmCard p={pending} t={t} onDecide={decide} voice={call.active} /> : null} />
+        </div>
+      ) : (<>
       <div className="flex-1 overflow-y-auto space-y-3 p-3">
-        {messages.map((m, i) => <Bubble key={i} m={m} t={t} thread={thread} />)}
+        {messages.map((m, i) => <Bubble key={i} m={m} t={t} thread={thread} reveal={liveReveal(i)} />)}
+        {interim && <div className="flex justify-end"><div className="max-w-[85%] rounded-2xl bg-navy-800/60 text-white px-4 py-2 italic" dir={isArabic(interim) ? 'rtl' : 'ltr'}><span className="opacity-60 me-1">🎙</span>{interim}</div></div>}
         {!messages.some((m) => m.role === 'user') && !live && !pending && (
           <div className="flex flex-wrap gap-2 pt-1">
             {(t.quick[role] || []).map((q) => <button key={q} className="chip bg-sand-100 text-navy-800 hover:bg-sand-200 py-1.5 px-3 text-sm" dir={isArabic(q) ? 'rtl' : 'ltr'} onClick={() => send(q)}>{q}</button>)}
@@ -89,32 +123,38 @@ export default function Chat({ t, role, lang, prefill, onPrefillUsed, openKey, o
             </div>
           </div>
         )}
-        {pending && <ConfirmCard p={pending} t={t} onDecide={decide} />}
+        {pending && <ConfirmCard p={pending} t={t} onDecide={decide} voice={call.active} />}
         {error && <div className="rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">{error}</div>}
+        {call.state === 'error' && <div className="rounded-xl bg-red-50 text-red-700 px-3 py-2 text-sm">{t.callFailed}{call.error ? ` (${call.error})` : ''}</div>}
         <div ref={bottom} />
       </div>
       <form className="flex gap-2 p-3 border-t border-sand-200 bg-white" onSubmit={(e) => { e.preventDefault(); send() }}>
         <button type="button" className="btn-ghost text-sm" title={t.newChat} onClick={newChat}>⟳</button>
-        <input ref={fileRef} type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" className="hidden" onChange={(e) => attach(e.target.files?.[0])} />
-        <button type="button" className="btn-ghost px-3" title={t.attach} disabled={busy || uploading} onClick={() => fileRef.current?.click()}>📎</button>
-        <input className="input" value={input} onChange={(e) => setInput(e.target.value)} placeholder={busy ? t.thinking : t.typeMessage} dir={isArabic(input) ? 'rtl' : 'ltr'} autoFocus />
-        <button className="btn-primary" disabled={busy || !input.trim()}>{t.send}</button>
+        {/* one channel at a time on a thread: typing is off during a call, so two turns never run on the same conversation */}
+        <button type="button" className={call.active ? 'btn-primary px-3 whitespace-nowrap' : 'btn-ghost px-3'} title={call.active ? t.endCall : t.call} disabled={busy && !call.active}
+          onClick={() => (call.active ? call.stop() : call.start(thread, lang))}>
+          {call.active ? `⏹ ${t.callState[call.state]}` : '📞'}
+        </button>
+        <input className="input" value={input} onChange={(e) => setInput(e.target.value)} placeholder={call.active ? t.inCall : busy ? t.thinking : t.typeMessage} disabled={call.active} dir={isArabic(input) ? 'rtl' : 'ltr'} autoFocus />
+        <button className="btn-primary" disabled={busy || call.active || !input.trim()}>{t.send}</button>
       </form>
+      </>)}
     </div>
   )
 }
 
-function Bubble({ m, t, thread }: { m: Msg; t: Dict; thread: string }) {
+function Bubble({ m, t, thread, reveal }: { m: Msg; t: Dict; thread: string; reveal?: number | null }) {
   const [open, setOpen] = useState(false)
   const [rated, setRated] = useState<'up' | 'down' | null>(null)
   const rtl = isArabic(m.text)
-  if (m.role === 'user') return <div className="flex justify-end"><div className="max-w-[85%] rounded-2xl bg-navy-800 text-white px-4 py-2 whitespace-pre-wrap" dir={rtl ? 'rtl' : 'ltr'}>{m.text}</div></div>
+  if (m.role === 'user') return <div className="flex justify-end"><div className="max-w-[85%] rounded-2xl bg-navy-800 text-white px-4 py-2 whitespace-pre-wrap" dir={rtl ? 'rtl' : 'ltr'}>{m.voice && <span className="opacity-60 me-1" title={t.spoken}>🎙</span>}{m.text}</div></div>
   const rate = (rating: 'up' | 'down') => { setRated(rating); api.feedback({ rating, thread, turn_id: m.turnId ?? null, message: m.text }).catch(() => undefined) }
   const v = m.verification
   return (
     <div className="max-w-[92%] space-y-1">
-      {m.text && <div className="card px-4 py-3 whitespace-pre-wrap" dir={rtl ? 'rtl' : 'ltr'}>{m.text}</div>}
+      {m.text && <div className="card px-4 py-3 whitespace-pre-wrap" dir={rtl ? 'rtl' : 'ltr'}>{revealText(m.text, reveal)}{reveal != null && <span className="dot"> ●</span>}</div>}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        {m.voice && <span className="text-gray-500" title={t.spoken}>🔊 {t.spoken}</span>}
         {v && <VerificationBadge v={v} t={t} />}
         {m.guardrail && <GuardrailBadge g={m.guardrail} t={t} />}
         {m.checked && m.checked.length > 0 && (
@@ -178,7 +218,7 @@ function ToolRow({ e }: { e: ToolEntry }) {
   )
 }
 
-function ConfirmCard({ p, t, onDecide }: { p: Pending; t: Dict; onDecide: (ok: boolean) => void }) {
+function ConfirmCard({ p, t, onDecide, voice }: { p: Pending; t: Dict; onDecide: (ok: boolean) => void; voice?: boolean }) {
   const ar = p.lang === 'ar'
   const label = (tool: string) => ({ create_booking: ar ? 'حجز هذه الرحلة' : 'Book this flight', cancel_booking: ar ? 'إلغاء الحجز' : 'Cancel booking', change_booking: ar ? 'تغيير الرحلة' : 'Change flight', add_extra_bag: ar ? 'إضافة أمتعة' : 'Add baggage', request_exception: ar ? 'تسجيل حالة استثناء لفريق خدمة العملاء' : 'Log an exception case for the customer-care team' } as Record<string, string>)[tool] || tool
   return (
@@ -207,10 +247,13 @@ function ConfirmCard({ p, t, onDecide }: { p: Pending; t: Dict; onDecide: (ok: b
           {a.args.reason ? <div className="text-sm text-gray-600">{t.reason}: {String(a.args.reason)}</div> : null}
         </div>
       ))}
-      <div className="flex gap-2">
-        <button className="btn-teal" onClick={() => onDecide(true)}>{t.confirmYes}</button>
-        <button className="btn-ghost" onClick={() => onDecide(false)}>{t.confirmNo}</button>
-      </div>
+      {/* on a call the decision is spoken (VOICE_PLAN rule 3): the buttons would race the call's own pending card */}
+      {voice
+        ? <div className="text-sm text-navy-700">🎙 {t.sayYesNo}</div>
+        : <div className="flex gap-2">
+            <button className="btn-teal" onClick={() => onDecide(true)}>{t.confirmYes}</button>
+            <button className="btn-ghost" onClick={() => onDecide(false)}>{t.confirmNo}</button>
+          </div>}
     </div>
   )
 }

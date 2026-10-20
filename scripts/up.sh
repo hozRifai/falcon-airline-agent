@@ -8,6 +8,7 @@
 #   scripts/up.sh --no-build    # start only, never rebuild
 #   scripts/up.sh --logs        # start, then follow the runtime log (Ctrl-C leaves it running)
 #   scripts/up.sh --trace       # also start the trace UI (Phoenix, http://localhost:6006) and export every service's spans to it
+#   scripts/up.sh --voice       # also start the voice bot on the laptop (scripts/voice.sh, http://localhost:7860/client; decision #49)
 #
 # If the database has never been seeded (first time, or after `docker compose down -v`), this script
 # says so and points you to scripts/reset.sh instead of starting a broken stack.
@@ -19,12 +20,14 @@ source "$ROOT/scripts/_docker_common.sh"
 BUILD=1
 LOGS=0
 TRACE=0
+VOICE=0
 for arg in "$@"; do
   case "$arg" in
     --no-build) BUILD=0 ;;
     --logs) LOGS=1 ;;
     --trace) TRACE=1 ;;
-    *) echo "usage: scripts/up.sh [--no-build] [--logs] [--trace]"; exit 2 ;;
+    --voice) VOICE=1 ;;
+    *) echo "usage: scripts/up.sh [--no-build] [--logs] [--trace] [--voice]"; exit 2 ;;
   esac
 done
 need_docker
@@ -69,6 +72,15 @@ echo "  App:    http://localhost:8000   $( [ -n "$(access_code)" ] && echo "(acc
 echo "  Logs:   $DC logs -f runtime"
 echo "  Stop:   $DC down                (data is kept)"
 if [ "$TRACE" = 1 ]; then echo "  Traces: http://localhost:6006   (Phoenix; every turn is a trace named chat.turn)"; fi
+if [ "$VOICE" = 1 ]; then
+  # outside Docker (decision #49); a bot from an earlier up.sh --voice is stopped first so the new code runs
+  "$ROOT/scripts/voice.sh" --stop >/dev/null
+  # appended, not overwritten: a restart must not erase the previous calls (scripts/voice_stt_compare.py and the latency summary read it)
+  echo "===== voice bot started $(date -Iseconds) =====" >> "$ROOT/.voice.log"
+  nohup "$ROOT/scripts/voice.sh" >> "$ROOT/.voice.log" 2>&1 &
+  echo $! > "$ROOT/.voice.pid"
+  echo "  Voice:  http://localhost:7860/client   (log: .voice.log; stop: scripts/voice.sh --stop)"
+fi
 if [ "$LOGS" = 1 ]; then
   echo
   $DC logs -f runtime

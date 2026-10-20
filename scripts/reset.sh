@@ -7,7 +7,7 @@
 #   scripts/reset.sh --clean    # also rebuild the images from zero (slow: re-downloads node + python deps)
 #   scripts/reset.sh --data     # only reset the data (schema + seed + policy); no rebuild, services restarted
 #
-
+# Needs Docker Desktop running. Works from Git Bash or WSL on Windows, and from any shell on macOS/Linux.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
