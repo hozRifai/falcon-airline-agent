@@ -33,7 +33,7 @@ from falcon.core.mcp_server import Audit, audited, build_server, require_role, r
 from falcon.core.models import Booking, FlightStatus, Quote
 from falcon.core.rules import (BAG_PRICES_AED, COMPASSIONATE_KINDS, LONG_DELAY_MINUTES, bag_quote, booking_quote, cancellation_quote, change_quote, compassionate_quote,
                                deadline_at, has_flown, money, waiver_quote)
-from falcon.services.mcp_reservations.repo import ReservationsRepo, quote_for_record, recompute_cancellation
+from falcon.services.mcp_reservations.repo import QuoteAlreadyUsed, ReservationsRepo, quote_for_record, recompute_cancellation
 
 log = logging.getLogger("falcon.reservations")
 PORT = 8001
@@ -388,6 +388,8 @@ async def create_booking(quote_id: str) -> dict:
         raise ToolError(f"The situation changed since the quote (now: {fresh.reason_en}). Request a new quote and show it to the customer.")
     try:
         result = await repo.execute_booking(await repo.customer(user.customer_id), fresh, quote_id)
+    except QuoteAlreadyUsed:
+        return await _first_result(quote_id, user)
     except ValueError as exc:
         raise ToolError(f"The booking was not created: {exc}. Search again for another flight.") from exc
     return {"already_done": False, **result,
@@ -504,6 +506,12 @@ async def _take_quote(user, pnr: str, quote_id: str, kind: str) -> tuple[Booking
     return b, quote_for_record(rec), rec["request"] if isinstance(rec["request"], dict) else json.loads(rec["request"])
 
 
+async def _first_result(quote_id: str, user) -> dict:
+    """The answer to a confirmation that lost the race to another one: the first one's result, exactly as a later repeat gets it."""
+    rec = await repo.quote(quote_id, user.customer_id)
+    return {"already_done": True, **((rec or {}).get("consumed_result") or {})}
+
+
 class _AlreadyDone(Exception):
     def __init__(self, result):
         self.result = result
@@ -525,7 +533,10 @@ async def cancel_booking(pnr: str, quote_id: str) -> dict:
     fresh = recompute_cancellation(b, rules, statuses, request)
     if not fresh.allowed or fresh.refund != stored.refund or fresh.fee != stored.fee:
         raise ToolError(f"The situation changed since the quote (now: {fresh.reason_en}). Request a new quote and show it to the customer.")
-    result = await repo.execute_cancellation(b, fresh, quote_id)
+    try:
+        result = await repo.execute_cancellation(b, fresh, quote_id)
+    except QuoteAlreadyUsed:
+        return await _first_result(quote_id, user)
     return {"already_done": False, **result, "message": f"Booking {b.pnr} is cancelled. {fresh.refund} {b.currency} will be refunded as {'travel credit' if fresh.refund_method == 'credit' else 'a refund to the original payment method'}."}
 
 
@@ -546,7 +557,10 @@ async def change_booking(pnr: str, quote_id: str) -> dict:
     fresh = change_quote(b, rules, now(), statuses, int(request["segment_seq"]), new_inst["id"], new_inst["dep_at"], new_fare)
     if not fresh.allowed or fresh.amount_due != stored.amount_due:
         raise ToolError(f"The situation changed since the quote (now: {fresh.reason_en}). Request a new quote.")
-    result = await repo.execute_change(b, fresh, quote_id)
+    try:
+        result = await repo.execute_change(b, fresh, quote_id)
+    except QuoteAlreadyUsed:
+        return await _first_result(quote_id, user)
     return {"already_done": False, **result}
 
 
@@ -565,7 +579,10 @@ async def add_extra_bag(pnr: str, quote_id: str) -> dict:
     fresh = bag_quote(b, rules, now(), statuses, int(request["kg"]), [int(i) for i in request["passenger_ids"]])
     if not fresh.allowed or fresh.amount_due != stored.amount_due:
         raise ToolError(f"The situation changed since the quote (now: {fresh.reason_en}). Request a new quote.")
-    result = await repo.execute_bag(b, fresh, quote_id)
+    try:
+        result = await repo.execute_bag(b, fresh, quote_id)
+    except QuoteAlreadyUsed:
+        return await _first_result(quote_id, user)
     return {"already_done": False, **result}
 
 
