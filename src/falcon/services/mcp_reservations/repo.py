@@ -136,6 +136,14 @@ class ReservationsRepo:
         return await self.db.fetch_one("SELECT * FROM reservations.quotes WHERE quote_id = %s AND customer_id = %s", (quote_id, customer_id))
 
     # ------------------------------------------------------------ write actions (each one transaction)
+    async def _claim(self, conn, quote_id: str) -> None:
+        """First statement of every write: mark the quote used, only if nobody has. Postgres locks the row, so a second confirmation
+        arriving at the same moment waits for the first to commit, then finds it used (FAILURE_DIARY #73: two simultaneous confirms
+        both passed the earlier "not consumed" check and refunded twice)."""
+        cur = await conn.execute("UPDATE reservations.quotes SET consumed_at=%s WHERE quote_id=%s AND consumed_at IS NULL", (_wall(), quote_id))
+        if cur.rowcount != 1:
+            raise QuoteAlreadyUsed(quote_id)
+
     async def execute_cancellation(self, booking: Booking, quote: Quote, quote_id: str | None, override: Override | None = None) -> dict:
         ts = now()
         pax = max(1, len([p for p in booking.passengers if p.pax_type != "infant"]))
@@ -146,6 +154,8 @@ class ReservationsRepo:
                   "override": override.model_dump(exclude_none=True) if override else None}
         async with self.db.connection() as conn:
             async with conn.transaction():
+                if quote_id:
+                    await self._claim(conn, quote_id)
                 await conn.execute(
                     "UPDATE reservations.bookings SET status='cancelled', cancelled_at=%s, cancel_reason=%s, refund_method=%s, refund_amount=%s WHERE pnr=%s AND status='confirmed'",
                     (ts, quote.reason_code, quote.refund_method, quote.refund, booking.pnr))
@@ -174,6 +184,7 @@ class ReservationsRepo:
                   "changes_used": booking.changes_used + used, "involuntary": bool(d.get("involuntary"))}
         async with self.db.connection() as conn:
             async with conn.transaction():
+                await self._claim(conn, quote_id)
                 await conn.execute("UPDATE reservations.booking_segments SET flight_instance_id=%s, fare_per_pax=%s WHERE pnr=%s AND seq=%s",
                                    (new_id, money(d["new_fare_per_pax"]), booking.pnr, seq))
                 await conn.execute("UPDATE reservations.bookings SET changes_used = changes_used + %s, total_paid = total_paid + %s WHERE pnr=%s", (used, quote.amount_due, booking.pnr))
@@ -206,6 +217,7 @@ class ReservationsRepo:
         names = [f"{customer['first_name']} {customer['last_name']}"] + list(d.get("passenger_names") or [])
         async with self.db.connection() as conn:
             async with conn.transaction():
+                await self._claim(conn, quote_id)
                 pnr = await self._new_pnr(conn)
                 taken = await conn.execute("UPDATE reservations.flight_instances SET seats_sold = seats_sold + %s WHERE id = %s AND seats_total - seats_sold >= %s",
                                            (n, d["flight_instance_id"], n))
@@ -233,6 +245,7 @@ class ReservationsRepo:
                   "reference": f"BAG-{booking.pnr}-{uuid.uuid4().hex[:6].upper()}"}
         async with self.db.connection() as conn:
             async with conn.transaction():
+                await self._claim(conn, quote_id)
                 for pid in d["passenger_ids"]:
                     await conn.execute("INSERT INTO reservations.booking_extras(pnr,passenger_id,kind,kg,price,created_at) VALUES (%s,%s,'bag',%s,%s,%s)",
                                        (booking.pnr, pid, d["kg"], money(quote.amount_due) / len(d["passenger_ids"]), ts))
@@ -283,6 +296,10 @@ class ReservationsRepo:
         return await self.db.fetch_all(
             """SELECT r.*, c.first_name || ' ' || c.last_name AS customer_name FROM reservations.approval_requests r
                JOIN reservations.customers c ON c.customer_id = r.customer_id ORDER BY r.created_at DESC LIMIT %s""", (limit,))
+
+
+class QuoteAlreadyUsed(Exception):
+    """Another request consumed this quote first; the caller answers with that request's stored result."""
 
 
 def quote_for_record(record: dict) -> Quote:
