@@ -56,7 +56,6 @@ async def main() -> None:
     ap.add_argument("--approve", action="store_true", help="answer confirmation cards with yes")
     ap.add_argument("--no-reset", action="store_true", help="keep the current demo data")
     ap.add_argument("--thread", default="talk")
-    ap.add_argument("--attach", default=None, help="a PDF/JPEG/PNG to attach (as the paperclip would) before the first message")
     args = ap.parse_args()
     admin = {"X-Admin-Token": settings.admin_token}
     async with httpx.AsyncClient(timeout=240) as client:
@@ -65,12 +64,6 @@ async def main() -> None:
             raise SystemExit(f"switch -> {r.status_code}: {r.text[:300]}")
         headers = {"Authorization": f"Bearer {r.json()['token']}", **admin, "X-Falcon-Tags": "talk"}
         print(f"signed in as {args.persona}" + ("" if args.no_reset else " (demo data reset)") + "\n")
-        if args.attach:
-            import pathlib
-            path = pathlib.Path(args.attach)
-            ctype = "application/pdf" if path.suffix.lower() == ".pdf" else ("image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "image/png")
-            up = await client.post(f"{settings.runtime_public_url}/api/attachments", headers=headers, files={"file": (path.name, path.read_bytes(), ctype)})
-            print(f"attached {path.name}: {up.status_code} {up.text[:120]}\n")
         for msg in args.messages:
             print("YOU:", msg)
             done = await sse(client, "/api/chat", headers, {"message": msg, "thread": args.thread})

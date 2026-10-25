@@ -8,22 +8,20 @@ service that hands each finished user turn to call.CallSession, which decides wh
 Who is calling: the request body of the call (`{"token", "thread", "lang"}`, the app's Call button in phase 2) or, from Pipecat's own
 client page, VOICE_DEMO_USER signed in through the demo switcher (VOICE_RESET=1 puts the demo data back first, like the sidebar).
 VOICE_LANG (ar | en) is the call's one language: the STT model language and the voice (Nova-3 Arabic is monolingual).
+Speech-to-text is Deepgram Nova-3, chosen by measurement on the presenter's voice (decision #55, EVALUATION §6).
 """
 
 from __future__ import annotations
 
 import dataclasses
 import os
-import time
 import uuid
 
 import httpx
-import numpy as np
 from dotenv import load_dotenv
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import (Frame, InputAudioRawFrame, InterimTranscriptionFrame, LLMContextFrame, LLMFullResponseEndFrame,
-                                   LLMFullResponseStartFrame, LLMTextFrame, TranscriptionFrame, TTSSpeakFrame)
+from pipecat.frames.frames import Frame, LLMContextFrame, LLMFullResponseEndFrame, LLMFullResponseStartFrame, LLMTextFrame, TranscriptionFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -34,7 +32,6 @@ from pipecat.processors.frameworks.rtvi import RTVIServerMessageFrame
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.elevenlabs.stt import CommitStrategy, ElevenLabsRealtimeSTTService
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.llm_service import LLMService
 from pipecat.services.settings import LLMSettings
@@ -90,68 +87,14 @@ def confidence_of(result) -> tuple[float | None, float | None]:
 
 
 class ConfidenceLog(FrameProcessor):
-    """Logs every final transcript with the service's confidence (Deepgram gives one per word), so a noise threshold is picked from
-    real calls, not guessed (20 Oct), and two services can be compared on the same call (scripts/voice_stt_compare.py).
-    Nothing is filtered yet. Line format: "voice transcript [<stt>]: confidence mean <m> lowest <l>: <text>"."""
-
-    def __init__(self, stt_name: str):
-        super().__init__()
-        self._stt = stt_name
+    """Logs every final transcript with Deepgram's confidence (one per word), so a noise threshold can be picked from real calls,
+    not guessed (20 Oct). Nothing is filtered yet."""
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, TranscriptionFrame):
             mean, low = confidence_of(frame.result)
-            logger.info(f"voice transcript [{self._stt}]: confidence mean {mean} lowest {low}: {frame.text}")
-        await self.push_frame(frame, direction)
-
-
-def make_stt(name: str, lang: str, terms: list[str], shadow: bool = False):
-    """The speech-to-text service: VOICE_STT picks the one that drives the call (deepgram, the default; or elevenlabs), and
-    VOICE_STT_SHADOW runs another one on the same audio for comparison only (decision #55)."""
-    if name == "elevenlabs":
-        # Scribe v2 Realtime (a WebSocket, interim and committed transcripts). Driving the call, Pipecat's VAD commits each segment
-        # (manual); as a shadow there is no VAD in its pipeline, so ElevenLabs' own VAD commits.
-        return ElevenLabsRealtimeSTTService(
-            api_key=os.environ["ELEVENLABS_API_KEY"], commit_strategy=CommitStrategy.VAD if shadow else CommitStrategy.MANUAL,
-            include_language_detection=True,
-            settings=ElevenLabsRealtimeSTTService.Settings(language=STT_LANG[lang], keyterms=terms[:50]))
-    return DeepgramSTTService(api_key=os.environ["DEEPGRAM_API_KEY"],
-                              settings=DeepgramSTTService.Settings(model="nova-3", language=STT_LANG[lang], smart_format=True, keyterm=terms))
-
-
-class ShadowTee(FrameProcessor):
-    """Copies every microphone frame into the shadow STT's own pipeline and passes the original on untouched: the shadow hears
-    exactly what the main STT hears, and nothing it does reaches the call."""
-
-    def __init__(self, shadow: PipelineWorker):
-        super().__init__()
-        self._shadow = shadow
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        if isinstance(frame, InputAudioRawFrame):
-            await self._shadow.queue_frame(InputAudioRawFrame(audio=frame.audio, sample_rate=frame.sample_rate, num_channels=frame.num_channels))
-        await self.push_frame(frame, direction)
-
-
-class AudioProbe(FrameProcessor):
-    """Diagnostics (VOICE_PROBE=1, FAILURE_DIARY #64): every 2 s the peak input level (0..1), and every transcript Deepgram returns."""
-
-    def __init__(self, where: str):
-        super().__init__()
-        self._where, self._peak, self._frames, self._t = where, 0.0, 0, time.monotonic()
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        if isinstance(frame, InputAudioRawFrame):
-            self._frames += 1
-            self._peak = max(self._peak, float(np.abs(np.frombuffer(frame.audio, dtype=np.int16)).max(initial=0)) / 32768)
-            if time.monotonic() - self._t >= 2:
-                logger.info(f"probe[{self._where}] {self._frames} audio frames, peak level {self._peak:.3f}")
-                self._peak, self._frames, self._t = 0.0, 0, time.monotonic()
-        elif isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
-            logger.info(f"probe[{self._where}] {type(frame).__name__}: {frame.text}")
+            logger.info(f"voice transcript: confidence mean {mean} lowest {low}: {frame.text}")
         await self.push_frame(frame, direction)
 
 
@@ -159,7 +102,7 @@ class FalconAgentService(LLMService):
     """The Falcon runtime as a Pipecat LLM service: takes the latest user transcript from the context and hands it to the call.
 
     Each turn runs in its own task, not in the frame-processing task, so a barge-in (InterruptionFrame) stops the speech but never
-    cancels a runtime turn half-way (a cancelled SSE request would abandon a turn between a tool call and its result; decision #50).
+    cancels a runtime turn half-way (a cancelled SSE request would abandon a turn between a tool call and its result).
     """
 
     def __init__(self, runtime: RuntimeClient, lang: str, **kwargs):
@@ -222,12 +165,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     token, thread, lang = await sign_in(runner_args.body if isinstance(runner_args.body, dict) else None)
     terms = await keyterms(token, lang)
     logger.info(f"keyterms ({len(terms)}): {', '.join(terms)}")
-    stt_name = os.getenv("VOICE_STT", "deepgram")
-    shadow_name = os.getenv("VOICE_STT_SHADOW", "")
-    stt = make_stt(stt_name, lang, terms)
-    logger.info(f"voice stt: {stt_name}" + (f", shadow {shadow_name}" if shadow_name else "") + f" ({lang})")
-    shadow = (PipelineWorker(Pipeline([make_stt(shadow_name, lang, terms, shadow=True), ConfidenceLog(f"{shadow_name} shadow")]))
-              if shadow_name and shadow_name != stt_name else None)
+    stt = DeepgramSTTService(api_key=os.environ["DEEPGRAM_API_KEY"], settings=DeepgramSTTService.Settings(model="nova-3", language=STT_LANG[lang], smart_format=True, keyterm=terms))
     tts = ElevenLabsTTSService(api_key=os.environ["ELEVENLABS_API_KEY"],
                                settings=ElevenLabsTTSService.Settings(voice=VOICES[lang], model=TTS_MODEL, language=STT_LANG[lang]))
     agent = FalconAgentService(RuntimeClient(RUNTIME_URL, token, thread, lang), lang)
@@ -236,15 +174,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     context = LLMContext()
     # empty_user_turn=None: a turn that ends with no transcript (noise) is never answered (the spike replied to one).
     # The turn ends after VOICE_TURN_PAUSE seconds of silence, not when Smart Turn v3 judges the sentence complete: on Arabic it closed
-    # the turn at nearly every pause and one request became four answers (FAILURE_DIARY #66).
+    # the turn at nearly every pause and one request became four answers.
     pause = float(os.getenv("VOICE_TURN_PAUSE", "1.5"))
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(
         vad_analyzer=SileroVADAnalyzer(), empty_user_turn=None,
         user_turn_strategies=UserTurnStrategies(stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=pause)])))
-    probe = os.getenv("VOICE_PROBE") == "1"
-    stages = [transport.input(), *([ShadowTee(shadow)] if shadow else []), *([AudioProbe("mic")] if probe else []), stt, ConfidenceLog(stt_name),
-              *([AudioProbe("stt")] if probe else []),
-              user_aggregator, agent, tts, transport.output(), assistant_aggregator]
+    stages = [transport.input(), stt, ConfidenceLog(), user_aggregator, agent, tts, transport.output(), assistant_aggregator]
     # End of the customer's speech to the bot's first audio, per turn, with Pipecat's breakdown (endpointing, STT, agent, TTS):
     # the number VOICE_PLAN §4 bars at 4 s, logged on every call instead of measured once.
     latency = UserBotLatencyObserver()
@@ -256,7 +191,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
 
     worker = PipelineWorker(Pipeline(stages), params=PipelineParams(enable_metrics=True, enable_usage_metrics=True), observers=[latency])
     runner = WorkerRunner(handle_sigint=runner_args.handle_sigint)
-    await runner.add_workers(worker, *([shadow] if shadow else []))
+    await runner.add_workers(worker)
 
     @worker.rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):

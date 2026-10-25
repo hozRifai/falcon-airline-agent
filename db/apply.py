@@ -12,7 +12,7 @@ from pathlib import Path
 import psycopg
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from falcon.core.config import settings  # noqa: E402
+from falcon.core.config import settings
 
 HERE = Path(__file__).resolve().parent
 
@@ -48,6 +48,6 @@ if __name__ == "__main__":
     ensure_database()
     if "--seed-only" not in sys.argv:
         apply_schema()
-    from seed import run_seed  # noqa: E402
+    from seed import run_seed
 
     run_seed()

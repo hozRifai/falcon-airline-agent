@@ -1,4 +1,4 @@
-"""The policy server's deterministic eligibility tool, live (decision #34): the clauses it cites exist in the index, in both languages,
+"""The policy server's deterministic eligibility tool, live: the clauses it cites exist in the index, in both languages,
 and the figures it reports are the ones in the clause text.
 
 Requires the policy MCP server (scripts/up.sh). Skipped when it is down, or when its image predates the tool.
@@ -21,7 +21,7 @@ from falcon.core.mcp_client import client_for
 def _up(url: str) -> bool:
     try:
         return httpx.get(url, timeout=2).status_code < 500
-    except Exception:
+    except httpx.HTTPError:
         return False
 
 
@@ -37,7 +37,7 @@ def _parse(result):
 
 
 async def _tools() -> dict:
-    user = UserContext(user_id="u-layla", display_name="Layla Nasser", role="customer", customer_id="C-1004", lang="ar", session_id="test-policy")
+    user = UserContext(user_id="u-layla", display_name="Layla Nasser", customer_id="C-1004", lang="ar", session_id="test-policy")
     return {t.name: t for t in await client_for(user, [roles.POLICY_READ], ["policy"]).get_tools()}
 
 

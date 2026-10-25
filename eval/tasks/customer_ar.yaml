@@ -35,15 +35,14 @@
   fake_ok: true
   goal: |
     أنت خالد. رحلتك إلى الرياض (الحجز M8T2LD) غداً الساعة 02:30 ولديك حالة طبية طارئة وتريد الإلغاء. إذا قال المساعد إن المهلة انتهت لكن يمكن تسجيل حالة استثناء لفريق خدمة العملاء، اطلب الاستثناء وأكّد تسجيله.
-    عندما يطلب المساعد التقرير الطبي أو مستندًا، قل بالضبط "أرفقت التقرير الطبي: doctor_note.pdf" (المحادثة ترفعه عنك). لا تقبل شيئاً آخر. توقف عندما يعطيك رقم الحالة.
-  facts: {الحجز: M8T2LD, الرحلة: من دبي إلى الرياض, السبب: حالة طبية طارئة مع تقرير طبي (يُرفق عند الطلب)}
-  script: ["أحتاج إلى إلغاء رحلتي إلى الرياض M8T2LD، حالة طبية طارئة", "أرفقت التقرير الطبي: doctor_note.pdf، سجّل طلب الاستثناء من فضلك", "نعم"]
-  attachments: [{before_turn: 2, file: doctor_note.pdf}]
+    إذا سألك المساعد عن مستند، قل إن لديك تقريرًا طبيًا وسترسله. لا تقبل شيئاً آخر. توقف عندما يعطيك رقم الحالة.
+  facts: {الحجز: M8T2LD, الرحلة: من دبي إلى الرياض, السبب: حالة طبية طارئة مع تقرير طبي}
+  script: ["أحتاج إلى إلغاء رحلتي إلى الرياض M8T2LD، حالة طبية طارئة", "لدي تقرير طبي، سجّل طلب الاستثناء من فضلك", "نعم"]
   write_actions: [{tool: request_exception, args: {pnr: M8T2LD}}]
   forbidden_actions: [cancel_booking]
-  expected_tools: [quote_cancellation, list_my_attachments, request_exception]
+  expected_tools: [quote_cancellation, request_exception]
   must_mention: ["24 ساعة|المهلة|استثناء|حالة"]
-  final_state: [{sql: "select status from reservations.bookings where pnr='M8T2LD'", equals: confirmed}]
+  final_state: [{sql: "select status from reservations.bookings where pnr='M8T2LD'", equals: confirmed}, {sql: "select count(*) from reservations.email_outbox where pnr='M8T2LD' and subject like 'Case #%'", equals: 1}]
 
 - id: airline_cancelled_full_refund_ar
   lang: ar
@@ -108,25 +107,25 @@
   tags: [disruption, change, live-demo]
   goal: |
     أنتِ مريم. وصلتك رسالة بأن رحلتك إلى القاهرة غداً الساعة 13:15 (الحجز M2A7HS) أُلغيت. يجب أن تكوني في القاهرة غداً. اطلبي من المساعد نقلك إلى رحلة أخرى غداً؛ تفضّلين رحلة المساء 19:40 (FA929) إذا عُرضت عليك، وإلا فأي رحلة غداً. اسألي إن كان هناك رسوم. أكّدي عندما يُطلب منك. إذا قال المساعد إنه لا توجد رحلات غداً، اطلبي استرداد كامل المبلغ إلى بطاقتك. توقفي عندما يتأكد التغيير أو الاسترداد.
-  facts: {الحجز: M2A7HS, الرحلة الملغاة: FA923 بتاريخ 2026-10-21 الساعة 13:15, الرحلة المفضلة: FA929 بتاريخ 2026-10-21 الساعة 19:40, الدرجة: الخاصة}
+  facts: {الحجز: M2A7HS, الرحلة الملغاة: FA923 بتاريخ 2026-10-24 الساعة 13:15, الرحلة المفضلة: FA929 بتاريخ 2026-10-24 الساعة 19:40, الدرجة: الخاصة}
   write_actions: [{tool: change_booking, args: {pnr: M2A7HS}}]
   forbidden_actions: [request_exception]
   expected_tools: [get_booking|list_my_bookings|get_flight_status, search_flights, quote_change, change_booking]
   must_mention: ["FA929", "مجان|دون رسوم|بدون رسوم|دون (?:أي )?تكلفة|بدون (?:أي )?تكلفة|لا توجد (?:أي )?تكلفة|0 درهم|0.00"]
-  final_state: [{sql: "select flight_instance_id from reservations.booking_segments where pnr='M2A7HS' and seq=1", equals: FA929-2026-10-21}]
+  final_state: [{sql: "select flight_instance_id from reservations.booking_segments where pnr='M2A7HS' and seq=1", equals: FA929-2026-10-24}]
 
 - id: change_plus_bag_with_cap_ar
   lang: ar
   persona: u-salma
   tags: [change, baggage, compound]
   goal: |
-    أنتِ سلمى. تريدين تأجيل رحلتك إلى البحرين من 26 أكتوبر (الحجز S3L5KQ) إلى رحلة المساء يوم 27 أكتوبر (FA833 الساعة 20:10)، وإضافة حقيبة 20 كجم. شرطك: إذا كانت تكلفة التغيير (الرسوم مع فرق السعر) أكثر من 250 درهماً، لا تغيّري الرحلة وأضيفي الحقيبة فقط. أكّدي كل خطوة عندما يُطلب منك. توقفي عندما تتم الخطوتان (أو الحقيبة فقط إذا كان التغيير أغلى من 250).
-  facts: {الحجز: S3L5KQ, الرحلة الحالية: FA831 بتاريخ 2026-10-26 الساعة 08:10, الرحلة المطلوبة: FA833 بتاريخ 2026-10-27 الساعة 20:10, الحقيبة: 20 كجم, الحد: 250 درهم للتغيير}
+    أنتِ سلمى. تريدين تأجيل رحلتك إلى البحرين من 29 أكتوبر (الحجز S3L5KQ) إلى رحلة المساء يوم 30 أكتوبر (FA833 الساعة 20:10)، وإضافة حقيبة 20 كجم. شرطك: إذا كانت تكلفة التغيير (الرسوم مع فرق السعر) أكثر من 250 درهماً، لا تغيّري الرحلة وأضيفي الحقيبة فقط. أكّدي كل خطوة عندما يُطلب منك. توقفي عندما تتم الخطوتان (أو الحقيبة فقط إذا كان التغيير أغلى من 250).
+  facts: {الحجز: S3L5KQ, الرحلة الحالية: FA831 بتاريخ 2026-10-29 الساعة 08:10, الرحلة المطلوبة: FA833 بتاريخ 2026-10-30 الساعة 20:10, الحقيبة: 20 كجم, الحد: 250 درهم للتغيير}
   write_actions: [{tool: change_booking, args: {pnr: S3L5KQ}}, {tool: add_extra_bag, args: {pnr: S3L5KQ}}]
   forbidden_actions: [cancel_booking, request_exception]
   expected_tools: [quote_change, change_booking, quote_extra_bag, add_extra_bag]
   must_mention: ["200", "90"]
-  final_state: [{sql: "select flight_instance_id from reservations.booking_segments where pnr='S3L5KQ' and seq=1", equals: FA833-2026-10-27}, {sql: "select count(*) from reservations.booking_extras where pnr='S3L5KQ' and kg=20", equals: 1}]
+  final_state: [{sql: "select flight_instance_id from reservations.booking_segments where pnr='S3L5KQ' and seq=1", equals: FA833-2026-10-30}, {sql: "select count(*) from reservations.booking_extras where pnr='S3L5KQ' and kg=20", equals: 1}]
 
 - id: delay_refund_refused_then_exception_ar
   lang: ar
@@ -134,7 +133,7 @@
   tags: [delay, exception, human-in-the-loop]
   goal: |
     أنتِ ريم. رحلتك إلى مسقط اليوم الساعة 12:00 (الحجز R8E2GN) متأخرة ثلاث ساعات وتريدين إلغاءها واسترداد المبلغ إلى بطاقتك لأنك ستسافرين بالسيارة. إذا قال المساعد إن الاسترداد غير ممكن الآن (التأخير أقل من خمس ساعات والمهلة انتهت) لكن يمكن تسجيل حالة استثناء لفريق خدمة العملاء، اطلبي تسجيلها وأكّدي. توقفي عندما تحصلين على رقم الحالة.
-  facts: {الحجز: R8E2GN, الرحلة: FA861 بتاريخ 2026-10-20 الساعة 12:00 من دبي إلى مسقط, التأخير: 180 دقيقة, الدرجة: المرنة}
+  facts: {الحجز: R8E2GN, الرحلة: FA861 بتاريخ 2026-10-23 الساعة 12:00 من دبي إلى مسقط, التأخير: 180 دقيقة, الدرجة: المرنة}
   write_actions: [{tool: request_exception, args: {pnr: R8E2GN}}]
   forbidden_actions: [cancel_booking, change_booking]
   expected_tools: [quote_cancellation, request_exception]
@@ -153,8 +152,8 @@
   script: ["أريد حجز رحلة الأسبوع القادم، ابحث لي عن أرخص رحلة من دبي إلى بيروت"]
   forbidden_actions: [cancel_booking, change_booking, request_exception]
   expected_tools: [search_flights]
-  must_mention: ["FA951", "\\b900\\b", "26 أكتوبر|26 تشرين|2026-10-26|الاثنين|الإثنين"]
-  # 965 (the 27th) may appear among the alternatives after the cheapest; it must not be presented as the cheapest
+  must_mention: ["FA951", "\\b900\\b", "29 أكتوبر|29 تشرين|2026-10-29|الخميس"]
+  # 965 (the 30th) may appear among the alternatives after the cheapest; it must not be presented as the cheapest
   must_not_mention: ['(?:الأرخص|أرخص|الأقل سعر)[^.\n]{0,80}965']
 
 - id: book_cheapest_next_week_ar
@@ -172,7 +171,7 @@
   expected_tools: [search_flights, quote_booking, create_booking]
   must_mention: ["FA951", "\\b900\\b"]
   final_state:
-    - {sql: "select count(*) from reservations.bookings b join reservations.booking_segments s using (pnr) where b.customer_id='C-1009' and b.status='confirmed' and s.flight_instance_id='FA951-2026-10-26' and b.fare_family='SPECIAL'", equals: 1}
+    - {sql: "select count(*) from reservations.bookings b join reservations.booking_segments s using (pnr) where b.customer_id='C-1009' and b.status='confirmed' and s.flight_instance_id='FA951-2026-10-29' and b.fare_family='SPECIAL'", equals: 1}
 
 # ---- disclosed facts (decision #34, FAILURE_DIARY #48): Hozayfa's finding of 18 Oct as typed (answered then with "have a safe trip"), and a newborn
 - id: pregnant_38th_month_ar

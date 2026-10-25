@@ -20,7 +20,7 @@ B = settings.runtime_public_url
 def _up() -> bool:
     try:
         return httpx.get(f"{B}/api/health", timeout=2).status_code == 200
-    except Exception:
+    except httpx.HTTPError:
         return False
 
 
@@ -32,11 +32,11 @@ def reseed():
     subprocess.run([sys.executable, str(REPO_ROOT / "db" / "apply.py"), "--seed-only"], check=True, capture_output=True)
 
 
-ADMIN = {"X-Admin-Token": settings.admin_token}  # the tests are admin tooling: exempt from the per-IP rate limit, like the eval harness
+ADMIN = {"X-Admin-Token": settings.admin_token}  # full tool results in the done event, as the evaluation harness gets them
 
 
 def login(client: httpx.Client, user_id: str) -> dict:
-    r = client.post(f"{B}/api/auth/demo-login", json={"user_id": user_id, "access_code": settings.demo_access_code}, headers=ADMIN)
+    r = client.post(f"{B}/api/demo/switch", json={"user_id": user_id, "reset": False})  # the module reseeded once
     r.raise_for_status()
     return {"Authorization": f"Bearer {r.json()['token']}", **ADMIN}
 
@@ -63,13 +63,9 @@ def confirm(client, headers, approved, note=None):
     return [d for e, d in ev if e == "done"][0]
 
 
-def test_wrong_access_code_and_bad_token():
+def test_unknown_persona_and_bad_token():
     with httpx.Client(timeout=30) as c:
-        if settings.demo_access_code:
-            assert c.post(f"{B}/api/auth/demo-login", json={"user_id": "u-fatima", "access_code": "nope"}).status_code == 403
-        else:  # no code configured (the demo's default): any code is accepted, an unknown persona is not
-            assert c.post(f"{B}/api/auth/demo-login", json={"user_id": "u-fatima", "access_code": "nope"}).status_code == 200
-            assert c.post(f"{B}/api/auth/demo-login", json={"user_id": "u-nobody"}).status_code == 404
+        assert c.post(f"{B}/api/demo/switch", json={"user_id": "u-nobody", "reset": False}).status_code == 404
         assert c.get(f"{B}/api/bookings", headers={"Authorization": "Bearer junk"}).status_code == 401
 
 
@@ -123,7 +119,7 @@ def test_past_deadline_persona_gets_a_logged_case():
             r = c.get(f"{B}{path}", headers=H)
             assert r.status_code in (404, 405) or "text/html" in r.headers.get("content-type", "")
         personas = c.get(f"{B}/api/personas").json()["personas"]
-        assert {p["role"] for p in personas} == {"customer"}
+        assert all(p["customer_id"] for p in personas)  # every persona is a customer: no staff sign-in exists
 
 
 def test_airline_cancelled_flight_in_the_seed_gives_a_full_refund():
@@ -135,10 +131,8 @@ def test_airline_cancelled_flight_in_the_seed_gives_a_full_refund():
         assert "0.00" in done["message"] and "965.00" in done["message"]
 
 
-def test_admin_reset_and_metrics():
+def test_metrics_need_the_admin_token():
     with httpx.Client(timeout=120) as c:
-        assert c.post(f"{B}/api/admin/reset").status_code == 403
-        r = c.post(f"{B}/api/admin/reset", headers={"X-Admin-Token": settings.admin_token}).json()
-        assert r["ok"]
+        assert c.get(f"{B}/api/metrics/summary").status_code == 403
         m = c.get(f"{B}/api/metrics/summary", headers={"X-Admin-Token": settings.admin_token}).json()
         assert "turns" in m and isinstance(m["tools"], list)

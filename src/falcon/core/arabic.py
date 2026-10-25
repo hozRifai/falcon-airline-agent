@@ -2,8 +2,8 @@
 
 Why normalise: Arabic keyword search fails without it. "الإلغاء" and "الالغاء" are the same
 word with different alef forms; "ة"/"ه" and "ى"/"ي" are written inconsistently; diacritics
-and tatweel (ـ) are decoration. BM25 / Postgres full-text search sees different strings
-unless we fold them first. The same folding is applied to documents and to queries.
+and tatweel (ـ) are decoration. Any keyword comparison (airport names, the scorer, the confirmation words) sees
+different strings unless we fold them first. The same folding is applied to documents and to queries.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ _ARABIC_INDIC = "٠١٢٣٤٥٦٧٨٩"
 _EASTERN_ARABIC_INDIC = "۰۱۲۳۴۵۶۷۸۹"
 _DIGIT_MAP = {ord(c): str(i) for i, c in enumerate(_ARABIC_INDIC)}
 _DIGIT_MAP.update({ord(c): str(i) for i, c in enumerate(_EASTERN_ARABIC_INDIC)})
+# The one digit table for str.translate (pii, the reviewer's amount checks, the scorer): Arabic-Indic and Persian digits to ASCII.
+DIGITS = _DIGIT_MAP
 
 
 def fold_digits(text: str) -> str:
@@ -79,5 +81,5 @@ _CODE_TOKEN = re.compile(r"\b(?:[A-Z]{2,3}|FA\d{1,4}|[A-Z0-9]{6}|AED|Gulf time|\
 
 def reply_script(text: str) -> str:
     """The script a reply is written in ('ar', 'en', 'mixed', 'unknown'), ignoring the tokens that are Latin in either language.
-    The runtime reviewer holds a draft to it (FAILURE_DIARY #43) and the evaluation scorer reports it; one definition for both."""
+    The runtime reviewer holds a draft to it and the evaluation scorer reports it; one definition for both."""
     return detect_script(_CODE_TOKEN.sub(" ", text or ""))

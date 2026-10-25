@@ -1,6 +1,6 @@
 """Personal data in chat text: find it, remove it, name what was removed.
 
-Two uses, one definition (decision #29): the guard node redacts a customer's message before the model, the logs or a
+Two uses, one definition: the guard node redacts a customer's message before the model, the logs or a
 trace see it ("my card is 4111 1111 1111 1111" becomes "[payment card ending 1111, removed]"), and the reviewer refuses a
 draft reply that would send any of these back out. Deterministic on purpose: a card number has a checksum, an Emirates ID
 and an IBAN have a fixed shape, so a regex plus Luhn is both faster and more honest than asking a model whether a number
@@ -13,7 +13,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+from .arabic import DIGITS
+
 
 # 13-19 digits with optional spaces or dashes, validated by Luhn below (so dates, amounts and PNRs never match)
 CARD_RE = re.compile(r"(?<![\dA-Za-z])(?:\d[ -]?){12,18}\d(?![\dA-Za-z])")
@@ -74,31 +75,10 @@ def _card_matches(text: str) -> list[tuple[int, int, str]]:
     return out
 
 
-def find(text: str) -> list[Finding]:
-    """Every piece of personal data in the text, in order of appearance (cards first so a card is never read as a phone)."""
-    norm = text.translate(ARABIC_DIGITS)  # one-to-one, so positions in `norm` are positions in `text`
-    spans: list[tuple[int, int, Finding]] = []
-
-    def taken(s: int, e: int) -> bool:
-        return any(not (e <= a or s >= b) for a, b, _ in spans)
-
-    for s, e, digits in _card_matches(norm):
-        spans.append((s, e, Finding("card", text[s:e], f"[payment card ending {digits[-4:]}, removed]")))
-    for s, e, kind, rep in (
-        *[(m.start(), m.end(), "iban", "[IBAN removed]") for m in IBAN_RE.finditer(norm) if norm[m.start():m.start() + 2].isalpha()],
-        *[(m.start(), m.end(), "emirates_id", "[Emirates ID removed]") for m in EMIRATES_ID_RE.finditer(norm)],
-        *[(m.start(), m.end(), "email", "[email address removed]") for m in EMAIL_RE.finditer(norm)],
-        *[(m.start(), m.end(), "phone", "[phone number removed]") for m in PHONE_RE.finditer(norm)],
-    ):
-        if not taken(s, e):
-            spans.append((s, e, Finding(kind, text[s:e], rep)))
-    spans.sort(key=lambda t: t[0])
-    return [f for _, _, f in spans]
-
-
-def redact(text: str) -> Redaction:
-    """The text with every piece of personal data replaced by a placeholder that says what was removed."""
-    norm = text.translate(ARABIC_DIGITS)
+def _spans(text: str) -> list[tuple[int, int, Finding]]:
+    """(start, end, finding) for every piece of personal data, in order of appearance. Cards are matched first, so a card number is
+    never read as a phone number; a later match that overlaps an earlier one is dropped."""
+    norm = text.translate(DIGITS)  # one character for one character, so positions in `norm` are positions in `text`
     spans: list[tuple[int, int, Finding]] = []
     for s, e, digits in _card_matches(norm):
         spans.append((s, e, Finding("card", text[s:e], f"[payment card ending {digits[-4:]}, removed]")))
@@ -110,9 +90,19 @@ def redact(text: str) -> Redaction:
             if any(not (m.end() <= a or m.start() >= b) for a, b, _ in spans):
                 continue
             spans.append((m.start(), m.end(), Finding(kind, text[m.start():m.end()], rep)))
-    spans.sort(key=lambda t: t[0])
+    return sorted(spans, key=lambda t: t[0])
+
+
+def find(text: str) -> list[Finding]:
+    """Every piece of personal data in the text, in order of appearance (the reviewer's check on a draft reply)."""
+    return [f for _, _, f in _spans(text)]
+
+
+def redact(text: str) -> Redaction:
+    """The text with every piece of personal data replaced by a placeholder that says what was removed (the guard, before the
+    model, the logs or a trace see the message)."""
     out, last, findings = [], 0, []
-    for s, e, f in spans:
+    for s, e, f in _spans(text):
         out.append(text[last:s])
         out.append(f.replacement)
         findings.append(f)

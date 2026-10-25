@@ -37,7 +37,7 @@ Do not answer the question. Return only the JSON."""
 
 class QueryRewriter:
     def __init__(self, model: str | None = None):
-        self.model = model or settings.query_rewrite_model or settings.llm_model_cheap
+        self.model = model or settings.llm_model
         self._client = None
 
     @property
@@ -60,6 +60,6 @@ class QueryRewriter:
                 messages=[{"role": "system", "content": PROMPT}, {"role": "user", "content": question}])
             queries = json.loads(resp.choices[0].message.content or "{}").get("queries", [])
             return [q.strip() for q in queries if isinstance(q, str) and q.strip()][:3]
-        except Exception as exc:  # retrieval must not fail because the rewriter did
+        except Exception as exc:  # noqa: BLE001 - retrieval must not fail because the rewriter did
             log.warning("query rewrite failed, searching the original question only: %s", exc)
             return []

@@ -4,7 +4,7 @@
 
 `db/apply.py` (used by scripts/reset.sh) recreates everything from schema.sql; this file is the path for a running demo
 whose code moved on. Every statement is written so that applying it twice is a no-op, and the list only grows: a change to
-schema.sql that an existing database must pick up gets a line here too (FAILURE_DIARY #38).
+schema.sql that an existing database must pick up gets a line here too.
 """
 
 from __future__ import annotations
@@ -15,10 +15,10 @@ from pathlib import Path
 import psycopg
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from falcon.core.config import settings  # noqa: E402
+from falcon.core.config import settings
 
 MIGRATIONS: list[tuple[str, str]] = [
-    # 2026-10-17: one persona (decision #25); staff users, the ops views and the ops_ro role go
+    # 2026-10-17: one persona; staff users, the ops views and the ops_ro role go
     ("agent.users: customers only", """
         DELETE FROM agent.users WHERE role <> 'customer';
         ALTER TABLE agent.users DROP CONSTRAINT IF EXISTS users_role_check;
@@ -34,7 +34,7 @@ MIGRATIONS: list[tuple[str, str]] = [
           END IF;
         END $$;
     """),
-    # 2026-10-17: reviewer loop (decision #26) and thumbs feedback
+    # 2026-10-17: reviewer loop and thumbs feedback
     ("agent.turns: thread, verification", """
         ALTER TABLE agent.turns ADD COLUMN IF NOT EXISTS thread text;
         ALTER TABLE agent.turns ADD COLUMN IF NOT EXISTS verification jsonb;
@@ -55,26 +55,29 @@ MIGRATIONS: list[tuple[str, str]] = [
         GRANT ALL ON agent.feedback TO agent_rw;
         GRANT USAGE, SELECT ON SEQUENCE agent.feedback_id_seq TO agent_rw;
     """),
-    # 2026-10-18: tracing (decision #27)
+    # 2026-10-18: tracing
     ("trace ids", """
         ALTER TABLE agent.turns ADD COLUMN IF NOT EXISTS trace_id text;
         ALTER TABLE agent.turns ADD COLUMN IF NOT EXISTS span_id text;
         ALTER TABLE agent.audit_log ADD COLUMN IF NOT EXISTS trace_id text;
     """),
-    # 2026-10-18: dense-only policy search (decision #24) dropped the lexical columns from schema.sql; a laptop database built
-    # before that still had text_norm NOT NULL, so the new ingest failed on insert (FAILURE_DIARY #40)
+    # 2026-10-18: dense-only policy search dropped the lexical columns from schema.sql; a laptop database built
+    # before that still had text_norm NOT NULL, so the new ingest failed on insert
     ("policy.clauses: lexical columns gone", """
         DROP INDEX IF EXISTS policy.clauses_tsv_idx;
         ALTER TABLE policy.clauses DROP COLUMN IF EXISTS tsv;
         ALTER TABLE policy.clauses DROP COLUMN IF EXISTS text_norm;
     """),
-    # 2026-10-18: input guardrail (decision #29)
+    # 2026-10-18: input guardrail
     ("agent.turns: guardrail", "ALTER TABLE agent.turns ADD COLUMN IF NOT EXISTS guardrail jsonb;"),
     # 2026-10-19: time to first token per turn (the latency a voice channel would feel)
     ("agent.turns: first_token_ms", "ALTER TABLE agent.turns ADD COLUMN IF NOT EXISTS first_token_ms int;"),
-    # 2026-10-18: new bookings (decision #30): a booking quote has no PNR until it is executed
+    # 2026-10-18: new bookings: a booking quote has no PNR until it is executed
     ("reservations.quotes: pnr nullable", "ALTER TABLE reservations.quotes ALTER COLUMN pnr DROP NOT NULL;"),
-    # 2026-10-18: itinerary by email (decision #32)
+    # 2026-10-22: per-passenger cancellation and the five use cases (decision #60)
+    ("reservations.passengers: cancelled_at", "ALTER TABLE reservations.passengers ADD COLUMN IF NOT EXISTS cancelled_at timestamptz;"),
+    ("agent.users: shown", "ALTER TABLE agent.users ADD COLUMN IF NOT EXISTS shown boolean NOT NULL DEFAULT true;"),
+    # 2026-10-18: itinerary by email
     ("reservations.email_outbox", """
         CREATE TABLE IF NOT EXISTS reservations.email_outbox (
           id serial PRIMARY KEY, pnr text REFERENCES reservations.bookings(pnr), customer_id text NOT NULL, to_email text NOT NULL,
@@ -83,14 +86,8 @@ MIGRATIONS: list[tuple[str, str]] = [
         GRANT SELECT, INSERT, UPDATE, DELETE ON reservations.email_outbox TO res_rw;
         GRANT USAGE, SELECT ON SEQUENCE reservations.email_outbox_id_seq TO res_rw;
     """),
-    # 2026-10-18: documents attached in the chat as evidence for exception cases (decision #33)
-    ("reservations.attachments", """
-        CREATE TABLE IF NOT EXISTS reservations.attachments (
-          id serial PRIMARY KEY, customer_id text NOT NULL, filename text NOT NULL, content_type text NOT NULL, size_bytes int NOT NULL,
-          sha256 text NOT NULL, data bytea NOT NULL, uploaded_at timestamptz NOT NULL);
-        GRANT SELECT, INSERT, UPDATE, DELETE ON reservations.attachments TO res_rw;
-        GRANT USAGE, SELECT ON SEQUENCE reservations.attachments_id_seq TO res_rw;
-    """),
+    # 2026-10-21: documents are no longer attached in the chat (the care team requests them by email); the table goes
+    ("reservations.attachments: removed", "DROP TABLE IF EXISTS reservations.attachments;"),
 ]
 
 

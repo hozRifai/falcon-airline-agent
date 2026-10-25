@@ -17,7 +17,6 @@ import json
 import statistics
 import time
 from datetime import datetime
-from pathlib import Path
 
 import httpx
 
@@ -36,8 +35,7 @@ VOICE_TASKS = ["cancel_saver_credit_ar", "cancel_special_wants_cash_ar", "airlin
 async def run_one(task, http: httpx.AsyncClient) -> dict:
     reset_db()
     base = settings.runtime_public_url
-    r = await http.post(f"{base}/api/auth/demo-login", json={"user_id": task.persona, "access_code": settings.demo_access_code},
-                        headers={"X-Admin-Token": settings.admin_token})
+    r = await http.post(f"{base}/api/demo/switch", json={"user_id": task.persona, "reset": False})
     r.raise_for_status()
     headers = {"X-Admin-Token": settings.admin_token, "X-Falcon-Tags": f"eval,voice,task:{task.id}"}
     runtime = RuntimeClient(base, r.json()["token"], f"voice-eval-{task.id}", task.lang if task.lang in ("ar", "en") else "ar", http, headers)

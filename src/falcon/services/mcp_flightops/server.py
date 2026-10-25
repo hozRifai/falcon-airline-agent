@@ -1,7 +1,7 @@
 """Flight-ops MCP server: the agent's window into the legacy flight API.
 
 Read-only tools (role Flights.Read): live flight status and current disruptions. Disruptions are events in the
-operations system (seeded for the demo); the agent reads them and never writes them (decision #25: one persona).
+operations system (seeded for the demo); the agent reads them and never writes them (one persona).
 
 Run:  python -m falcon.services.mcp_flightops.server   (port 8002)
 """
@@ -9,14 +9,13 @@ Run:  python -m falcon.services.mcp_flightops.server   (port 8002)
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import datetime
 
 import uvicorn
 from mcp.server.fastmcp.exceptions import ToolError
 
 from falcon.core import auth as roles
 from falcon.core.clock import GULF, now
-from datetime import datetime
 from falcon.core.config import settings
 from falcon.core.db import Database
 from falcon.core.legacy_client import LegacyFlightApiError, LegacyFlightClient
@@ -30,8 +29,7 @@ audit = Audit("flightops", Database(settings.dsn_audit, max_size=2))
 
 
 mcp = build_server(
-    "falcon-flightops",
-    audience=settings.entra_aud_flightops,
+    "flightops",
     public_url=settings.mcp_flightops_url,
     port=PORT,
     instructions="Live flight status and disruptions from Falcon's flight operations system.",

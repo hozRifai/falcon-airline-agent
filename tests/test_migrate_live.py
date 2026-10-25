@@ -1,4 +1,4 @@
-"""db/migrate.py (FAILURE_DIARY #38): idempotent, and it leaves the columns the code writes to.
+"""db/migrate.py: idempotent, and it leaves the columns the code writes to.
 
 Runs against the database the live tests use (skipped when it is not reachable). It cannot rebuild a database from an old
 schema here, so the promise it checks is the one that matters day to day: running the migration on a current database, twice,
@@ -8,7 +8,6 @@ changes nothing and fails nowhere, and every column the runtime and the servers 
 from __future__ import annotations
 
 import importlib.util
-import sys
 from pathlib import Path
 
 import psycopg
@@ -21,7 +20,7 @@ def _db_up() -> bool:
     try:
         with psycopg.connect(settings.dsn_admin, connect_timeout=2):
             return True
-    except Exception:
+    except psycopg.Error:
         return False
 
 

@@ -23,9 +23,9 @@ from pathlib import Path
 import psycopg
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from falcon.core.clock import now  # noqa: E402
-from falcon.core.config import REPO_ROOT, settings  # noqa: E402
-from falcon.policy.parse_coc import parse_both  # noqa: E402
+from falcon.core.clock import now
+from falcon.core.config import REPO_ROOT, settings
+from falcon.policy.parse_coc import parse_both
 
 DATA = REPO_ROOT / "data" / "policy"
 MAX_PART = 1200
@@ -82,7 +82,7 @@ def rows_for(doc_id: str, lang: str, clauses) -> list[Row]:
 def mark_sections(rows: list[Row]) -> None:
     """Title-only rows ("5.5 Aircraft") held 13% of the index and took result slots without holding an answer; they stay
     readable by clause id but get no vector, and their title is prepended to the clauses under them instead
-    ("contextual chunk headers": "Animals: The animal must be properly crated..."). FAILURE_DIARY #34."""
+    ("contextual chunk headers": "Animals: The animal must be properly crated..."). """
     ids = {r.clause_id for r in rows}
     headings = {r.clause_id: r.text for r in rows if "#" not in r.clause_id and len(r.text) < HEADING_MAX
                 and any(other.startswith(r.clause_id + ".") for other in ids)}
@@ -141,9 +141,9 @@ def main() -> None:
             print("dense vectors: skipped" + ("" if args.no_embed else " (no embedding provider configured)")
                   + "; search_policy will report itself unavailable until the index is embedded")
         else:
-            to_embed = [(row_id, r) for row_id, r in zip(ids, rows) if not r.title_only]
+            to_embed = [(row_id, r) for row_id, r in zip(ids, rows, strict=False) if not r.title_only]
             vectors = emb.embed([embedding_text(r) for _, r in to_embed])
-            cur.executemany("UPDATE policy.clauses SET embedding = %s::vector WHERE id = %s", [(str(v), row_id) for v, (row_id, _) in zip(vectors, to_embed)])
+            cur.executemany("UPDATE policy.clauses SET embedding = %s::vector WHERE id = %s", [(str(v), row_id) for v, (row_id, _) in zip(vectors, to_embed, strict=False)])
             conn.commit()
             print(f"embedded {len(to_embed)} rows with {emb.provider}/{emb.model} (dim {len(vectors[0])}); {len(rows) - len(to_embed)} title-only rows left without a vector")
 

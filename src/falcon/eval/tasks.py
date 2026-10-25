@@ -14,7 +14,6 @@ A task is a hidden goal for the simulated user plus the checks that decide succe
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import yaml
 
@@ -43,7 +42,6 @@ class Task:
     grounding: bool = False
     expected_tools: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
-    attachments: list[dict] = field(default_factory=list)  # [{before_turn: n, file: <eval/fixtures/...>}]: uploaded by the runner before the n-th user message
 
 
 def load_tasks(pattern: str | None = None, fake_only: bool = False) -> list[Task]:

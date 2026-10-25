@@ -1,14 +1,13 @@
 [project]
 name = "falcon"
 version = "0.1.0"
-description = "Falcon Airline customer-service agent: LangGraph runtime, MCP servers, deterministic rules, bilingual policy search, evaluation harness."
+description = "Falcon Airline customer-service agent: LangGraph runtime, three MCP servers, deterministic rules, bilingual policy search, evaluation harness."
 requires-python = ">=3.12"
 dependencies = [
   "mcp==1.30.0",                       # 2.x renamed FastMCP and breaks langchain-mcp-adapters; stay on 1.x
   "langgraph==1.2.15",
   "langchain==1.4.6",
   "langchain-openai==1.7.2",           # OpenRouter is OpenAI-compatible: one client for any model
-  "langchain-anthropic",               # optional direct provider
   "langchain-mcp-adapters==0.3.2",
   "langgraph-checkpoint-postgres==3.2.0",
   "psycopg[binary,pool]",
@@ -16,15 +15,12 @@ dependencies = [
   "uvicorn[standard]",
   "pydantic>=2",
   "pydantic-settings",
-  "sqlglot==30.23.0",                  # parses the ops agent's SQL before the database ever sees it
   "pymupdf==1.28.2",
   "PyJWT[crypto]",
   "httpx",
   "pyyaml",
   "openai",
-  "python-multipart",
   "sse-starlette",
-  "azure-identity",                    # Entra ID app-only tokens between the runtime and the MCP servers (AUTH_MODE=entra)
   # Tracing (decision #27): OpenTelemetry once, any backend (Phoenix locally, Langfuse, any OTLP collector)
   "opentelemetry-sdk",
   "opentelemetry-exporter-otlp-proto-http",
@@ -51,3 +47,14 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 160
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Errors and likely bugs (pyflakes, syntax, bugbear, blind excepts, invalid characters), modern syntax, simplifications,
+# and no stale `noqa` markers. Long lines are allowed: the code favours one statement per line over wrapping.
+select = ["F", "E4", "E7", "E9", "B", "BLE", "UP", "SIM", "PLE", "RUF100"]
+ignore = ["E501", "B008", "SIM105", "SIM108", "SIM117"]

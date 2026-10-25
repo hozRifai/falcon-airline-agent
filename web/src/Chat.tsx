@@ -17,7 +17,7 @@ export const revealText = (text: string, fraction: number | null | undefined) =>
   return out.trimEnd()
 }
 
-export default function Chat({ t, role, lang, prefill, onPrefillUsed, openKey, onWrite }: { t: Dict; role: string; lang: string; prefill?: string; onPrefillUsed?: () => void; openKey?: number; onWrite?: () => void }) {
+export default function Chat({ t, lang, prefill, onPrefillUsed, openKey, onWrite }: { t: Dict; lang: string; prefill?: string; onPrefillUsed?: () => void; openKey?: number; onWrite?: () => void }) {
   const [thread, setThread] = useState(() => localStorage.getItem('falcon.thread') || 'main')
   const [messages, setMessages] = useState<Msg[]>([])
   const [pending, setPending] = useState<Pending | null>(null)
@@ -107,7 +107,7 @@ export default function Chat({ t, role, lang, prefill, onPrefillUsed, openKey, o
         {interim && <div className="flex justify-end"><div className="max-w-[85%] rounded-2xl bg-navy-800/60 text-white px-4 py-2 italic" dir={isArabic(interim) ? 'rtl' : 'ltr'}><span className="opacity-60 me-1">🎙</span>{interim}</div></div>}
         {!messages.some((m) => m.role === 'user') && !live && !pending && (
           <div className="flex flex-wrap gap-2 pt-1">
-            {(t.quick[role] || []).map((q) => <button key={q} className="chip bg-sand-100 text-navy-800 hover:bg-sand-200 py-1.5 px-3 text-sm" dir={isArabic(q) ? 'rtl' : 'ltr'} onClick={() => send(q)}>{q}</button>)}
+            {t.quick.map((q) => <button key={q} className="chip bg-sand-100 text-navy-800 hover:bg-sand-200 py-1.5 px-3 text-sm" dir={isArabic(q) ? 'rtl' : 'ltr'} onClick={() => send(q)}>{q}</button>)}
           </div>
         )}
         {live && (

@@ -49,7 +49,7 @@ const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'
 const DAYS_AR: Record<string, string> = { monday: 'الاثنين', tuesday: 'الثلاثاء', wednesday: 'الأربعاء', thursday: 'الخميس', friday: 'الجمعة', saturday: 'السبت', sunday: 'الأحد' }
 
 export function Search({ t, lang, onAsk }: { t: Dict; lang: Lang; onAsk: (q: string) => void }) {
-  const [form, setForm] = useState({ origin: 'Dubai', destination: 'Cairo', date_from: '2026-10-31', date_to: '2026-11-02', passengers: '1' })
+  const [form, setForm] = useState({ origin: 'Dubai', destination: 'Cairo', date_from: '2026-11-03', date_to: '2026-11-05', passengers: '1' })
   const [skip, setSkip] = useState<string[]>([])
   const [res, setRes] = useState<Record<string, any> | null>(null)
   const [busy, setBusy] = useState(false)

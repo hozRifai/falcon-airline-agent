@@ -13,7 +13,7 @@ from math import comb
 
 import psycopg
 
-from falcon.core.arabic import reply_script
+from falcon.core.arabic import DIGITS, reply_script
 from falcon.core.config import settings
 
 from . import metrics as agent_metrics
@@ -64,7 +64,7 @@ def _text_lang(text: str) -> str:
     return reply_script(text)
 
 
-_ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹٫’‘“”", "01234567890123456789.''\"\"")
+_ARABIC_DIGITS = {**DIGITS, **str.maketrans("٫’‘“”", ".''\"\"")}  # digits, plus the Arabic decimal point and curly quotes
 _THOUSANDS = re.compile(r"(?<=\d)[,٬ ](?=\d{3}(?!\d))")
 
 

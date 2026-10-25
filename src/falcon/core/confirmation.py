@@ -1,4 +1,4 @@
-"""The bare yes / bare no vocabulary (decision #41), shared by the chat runtime and the voice channel.
+"""The bare yes / bare no vocabulary, shared by the chat runtime and the voice channel.
 
 A message that only says yes (EN / AR), with at most filler words around it, is a confirmation with nothing new to decide: the
 chat raises the confirmation card itself, and the voice channel presses the confirm button. A bare no declines the spoken card.

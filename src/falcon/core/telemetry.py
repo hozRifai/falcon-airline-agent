@@ -1,4 +1,4 @@
-"""Tracing (decision #27): OpenTelemetry once, any backend.
+"""Tracing: OpenTelemetry once, any backend.
 
 Every service calls `setup_tracing("<service>")` at start-up. With no endpoint configured it does nothing beyond
 installing a no-op provider, so the code path is the same in tests and in the demo. With `OTEL_EXPORTER_OTLP_ENDPOINT`
@@ -63,13 +63,14 @@ def setup_tracing(service: str, app=None, *, langchain: bool = False, exporter=N
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
 
-        resource = Resource.create({"service.name": service, "service.namespace": "falcon", "deployment.environment": settings.environment})
+        resource = Resource.create({"service.name": service, "service.namespace": "falcon"})
         provider = TracerProvider(resource=resource)
         trace.set_tracer_provider(provider)
         if exporter is not None:
             from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
             provider.add_span_processor(SimpleSpanProcessor(exporter))  # type: ignore[union-attr]
+            _configured.setdefault("exporters", []).append(exporter)
         elif settings.otel_exporter_otlp_endpoint:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -78,6 +79,13 @@ def setup_tracing(service: str, app=None, *, langchain: bool = False, exporter=N
             provider.add_span_processor(BatchSpanProcessor(otlp))  # type: ignore[union-attr]
         _configured["provider"] = provider
         _configured["service"] = service
+    elif exporter is not None and not any(e is exporter for e in _configured.setdefault("exporters", [])):
+        # tracing was already set up in this process (importing the runtime app does it) without the test's exporter: attach it to
+        # the existing provider, once, or the test sees no spans at all (21 Oct: the suite failed once a test imported the app first)
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+        _configured["provider"].add_span_processor(SimpleSpanProcessor(exporter))  # type: ignore[union-attr]
+        _configured["exporters"].append(exporter)
         if enabled():
             _instrument_libraries(langchain=langchain)
             log.info("tracing on for %s -> %s", service, settings.otel_exporter_otlp_endpoint or "test exporter")

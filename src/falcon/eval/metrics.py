@@ -28,13 +28,11 @@ All of it is computed from the transcript the harness already records, so stored
 from __future__ import annotations
 
 import json
-import re
 import statistics
 from dataclasses import dataclass, field
 
 from falcon.core.config import settings
-
-from falcon.core.faithfulness import DONE_CLAIM_RE, EVIDENCE_TOOLS, MONEY_RE, WRITE_TOOLS, amounts_in, numbers_in  # noqa: E402,F401 - one definition for the gate and the scorer
+from falcon.core.faithfulness import DONE_CLAIM_RE, EVIDENCE_TOOLS, amounts_in, numbers_in
 
 HANDOVER_TOOLS = {"handover_to_human"}
 ESCALATION_TOOLS = {"request_exception"}
@@ -140,7 +138,13 @@ def compute(transcript: list[dict], expected_tools: list[str] | None = None) -> 
     return m
 
 
+def pct(n: int, d: int) -> str:
+    """ "42% (5/12)", or "n/a" with nothing to count."""
+    return f"{100 * n / d:.0f}% ({n}/{d})" if d else "n/a"
+
+
 def percentile(values: list[int | float], p: float) -> float:
+    """Linear-interpolation percentile (p in 0..1); NaN for an empty sample."""
     if not values:
         return float("nan")
     ordered = sorted(values)
@@ -153,9 +157,9 @@ def scorecard(runs: list[dict]) -> dict:
     """Aggregate over run records (dicts with the AgentMetrics fields merged in, as runs.jsonl stores them)."""
     n = len(runs) or 1
     with_seq = [r for r in runs if r.get("sequence_ok") is not None]
-    latencies = [l for r in runs for l in (r.get("turn_latencies") or [])]
-    first_tokens = [l for r in runs for l in (r.get("first_tokens") or [])]
-    model_lat = [l for r in runs for l in (r.get("model_latencies") or [])]
+    latencies = [ms for r in runs for ms in (r.get("turn_latencies") or [])]
+    first_tokens = [ms for r in runs for ms in (r.get("first_tokens") or [])]
+    model_lat = [ms for r in runs for ms in (r.get("model_latencies") or [])]
     tool_calls = sum(r.get("tool_calls", 0) for r in runs)
     successes = [r for r in runs if r.get("success")]
     cost_total = sum(r.get("cost_usd", 0.0) for r in runs)

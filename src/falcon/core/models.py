@@ -35,6 +35,7 @@ class Passenger(BaseModel):
     last_name: str
     pax_type: Literal["adult", "child", "infant"] = "adult"
     special_request: str | None = None
+    cancelled_at: datetime | None = None  # cancelled on a booking that stays confirmed for the others (decision #60)
 
 
 class Segment(BaseModel):
@@ -79,15 +80,6 @@ class FlightStatus(BaseModel):
     delay_minutes: int = 0
     reason: str | None = None
     updated_at: datetime | None = None
-
-
-class Override(BaseModel):
-    """What a supervisor can approve. Recorded on the audit log and the executed action."""
-
-    ignore_deadline: bool = False
-    waive_fee: bool = False
-    approved_by: str | None = None
-    approval_id: int | None = None
 
 
 class Quote(BaseModel):

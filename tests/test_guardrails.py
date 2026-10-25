@@ -1,4 +1,4 @@
-"""The guardrail layer (decision #29): redaction, the pattern classifier, the routing in the graph, the output checks.
+"""The guardrail layer: redaction, the pattern classifier, the routing in the graph, the output checks.
 
 No database and no key: the graph runs with an in-memory checkpointer and a stub model; the model classifier is off
 (tests/conftest.py), so what is tested here is the deterministic floor. The model layer is measured by falcon.eval.guardrails.
@@ -71,7 +71,7 @@ def test_patterns_leave_customer_requests_alone(text):
 
 # ---------------------------------------------------------------- routing in the graph
 class ScriptedModel(GenericFakeChatModel):
-    def bind_tools(self, tools: Any, **kwargs: Any):  # noqa: D401
+    def bind_tools(self, tools: Any, **kwargs: Any):
         return self
 
 
@@ -79,7 +79,7 @@ def _run(human: str, drafts: list[str], lang: str = "en") -> dict:
     model = ScriptedModel(messages=iter([AIMessage(content=d) for d in drafts]))
     graph = build_graph(MemorySaver())
     config = {"configurable": {"thread_id": "t1", "tools": [], "llm": model, "default_lang": lang}}
-    initial = {"messages": [HumanMessage(content=human)], "role": "customer", "user_name": "Test", "preferred_lang": lang}
+    initial = {"messages": [HumanMessage(content=human)], "user_name": "Test", "preferred_lang": lang}
     asyncio.run(graph.ainvoke(initial, config))
     return asyncio.run(graph.aget_state(config)).values
 
@@ -118,7 +118,7 @@ def test_social_engineering_reaches_the_agent_with_a_note(monkeypatch):
 
 
 def test_a_classifier_outage_fails_open_for_the_label_and_closed_for_the_document_floor(monkeypatch):
-    """The label fails open (the message reaches the agent); a question still gets the document floor (FAILURE_DIARY #60)."""
+    """The label fails open (the message reaches the agent); a question still gets the document floor."""
     from falcon.services.runtime.review import HELD
 
     async def broken(text: str, context=None):
@@ -144,7 +144,7 @@ def test_the_reviewer_refuses_code_prompt_text_and_personal_data():
     assert "code_in_reply" in r.problems and "do not write" in r.nudge
 
 
-# ---------------------------------------------------------------- disclosures (decision #34, FAILURE_DIARY #48)
+# ---------------------------------------------------------------- disclosures
 @pytest.mark.parametrize("text,kind,value,unit", [
     ("جميل. أنا حامل في شهري الثامن والثلاثين, سأسافر في الوقت المحدد ان شاء الله", g.PREGNANCY, 38, "months"),  # Layla, 18 Oct: "have a safe trip"
     ("I'm 30 weeks pregnant, I'll be flying to Cairo tomorrow as planned", g.PREGNANCY, 30, "weeks"),
@@ -253,7 +253,7 @@ def test_policy_questions_are_flagged_by_the_pattern_layer(text, expected):
 
 
 def test_a_question_with_the_classifier_down_is_treated_as_a_rules_question(monkeypatch):
-    """FAILURE_DIARY #60: the classifier's 429 removed the policy floor and an Arabic refund policy was invented."""
+    """The classifier's 429 removed the policy floor and an Arabic refund policy was invented."""
     import asyncio
 
     from falcon.services.runtime import guardrails as gr
@@ -294,7 +294,7 @@ def test_the_classifier_names_a_topic_and_unknown_topics_fall_back_to_general(mo
     assert g.topic == "general"
 
 
-# ---------------------------------------------------------------- decision #51: the classifier reads the previous reply
+# ---------------------------------------------------------------- The classifier reads the previous reply
 def test_the_classifier_input_carries_the_previous_reply_only_when_there_is_one():
     from falcon.services.runtime import guardrails as gr
     system, content = gr.classifier_input("والثاني؟", None)
@@ -329,7 +329,7 @@ async def test_guard_hands_the_context_to_the_classifier(monkeypatch):
 
 
 async def test_the_classifier_budget_leaves_room_after_the_model_reasons(monkeypatch):
-    # FAILURE_DIARY #72: 834 hidden reasoning tokens against max_tokens=700 left an empty answer and an "unknown" label
+    # 834 hidden reasoning tokens against max_tokens=700 left an empty answer and an "unknown" label
     from falcon.services.runtime import guardrails as gr
     seen = {}
 
@@ -341,3 +341,12 @@ async def test_the_classifier_budget_leaves_room_after_the_model_reasons(monkeyp
     monkeypatch.setattr(gr, "_llm_client", lambda: type("C", (), {"chat": type("Ch", (), {"completions": Completions()})()})())
     await gr.classify_by_llm("آآه، هل لي هنا تكالب مع الـ director again؟", "هل تودين أن أبحث لك عن رحلة؟")
     assert seen["max_tokens"] >= 834 + 200
+
+
+def test_a_question_without_a_question_mark_is_a_question():
+    # The pattern's closing word boundary had become a literal backspace byte, so only "?" / "؟" counted
+    from falcon.services.runtime.guardrails import QUESTION_RE
+    for text in ["what is the baggage allowance for infants", "كم وزن الحقيبة المسموح", "can I bring a stroller", "هل يمكن السفر"]:
+        assert QUESTION_RE.search(text), text
+    for text in ["I want to cancel my booking", "whatever, cancel it", "مرحبا"]:
+        assert not QUESTION_RE.search(text), text

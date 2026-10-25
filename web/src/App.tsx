@@ -23,9 +23,10 @@ export default function App() {
   const [openKey, setOpenKey] = useState(0)          // bumps when a new conversation should start with the agent's opening line
   const [tripsKey, setTripsKey] = useState(0)        // bumps when the trips panel should reload (after a write)
   const [panel, setPanel] = useState<'trips' | 'search'>('trips')
+  const [prefill, setPrefill] = useState<string | undefined>()  // a question the side panel puts in the chat box
   const [error, setError] = useState<string | null>(null)
   const t = dictionary(lang)
-  const name = (p: Persona) => (lang === 'ar' ? p.display_name_ar : p.display_name)
+  const name = (p: Persona) => p.display_name  // names stay as the booking holds them (Latin script) in both languages, as an airline's systems do (Hozayfa, 22 Oct)
   const note = (p: Persona) => (lang === 'ar' ? p.persona_note_ar : p.persona_note_en)
   const initials = (p: Persona) => name(p).split(' ').map((w) => w[0]).slice(0, 2).join('')
 
@@ -107,7 +108,7 @@ export default function App() {
         {/* customers: a list while choosing, a rail afterwards (large screens); an overlay drawer on small screens */}
         <aside className={`hidden lg:flex flex-col shrink-0 border-e border-sand-200 bg-sand-50 transition-all ${sidebar === 'open' ? 'w-72' : 'w-16'}`}>
           <div className={`flex items-center ${sidebar === 'open' ? 'justify-between px-3' : 'justify-center'} py-2 border-b border-sand-200`}>
-            {sidebar === 'open' && <span className="text-[11px] uppercase tracking-wide text-gray-500">{t.customers}</span>}
+            {sidebar === 'open' && <span className="flex-1 text-center text-sm font-bold text-navy-900">{t.customers}</span>}
             <button className="text-gray-500 hover:text-navy-900 text-sm px-1" title={sidebar === 'open' ? t.collapse : t.expand} onClick={() => setSidebar(sidebar === 'open' ? 'rail' : 'open')}>{sidebar === 'open' ? '⟨' : '⟩'}</button>
           </div>
           <div className="flex-1 overflow-y-auto"><CustomerList compact={sidebar === 'rail'} /></div>
@@ -116,7 +117,7 @@ export default function App() {
         {drawer && (
           <div className="lg:hidden fixed inset-0 z-20 flex" onClick={() => setDrawer(false)}>
             <div className="w-80 max-w-[85%] h-full bg-sand-50 shadow-xl overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-              <div className="px-3 py-2 text-[11px] uppercase tracking-wide text-gray-500 border-b border-sand-200">{t.customers}</div>
+              <div className="px-3 py-2 text-sm font-bold text-navy-900 text-center border-b border-sand-200">{t.customers}</div>
               <CustomerList compact={false} />
             </div>
             <div className="flex-1 bg-black/30" />
@@ -142,7 +143,7 @@ export default function App() {
                 </div>
               </div>
             )}
-            {user && <Chat key={`${user.session_id}-${lang}`} t={t} role="customer" lang={lang} openKey={openKey} onWrite={onWrite} />}
+            {user && <Chat key={`${user.session_id}-${lang}`} t={t} lang={lang} openKey={openKey} onWrite={onWrite} prefill={prefill} onPrefillUsed={() => setPrefill(undefined)} />}
           </section>
         </main>
 
@@ -154,13 +155,13 @@ export default function App() {
                 <div className="text-[11px] uppercase tracking-wide text-gray-500">{t.thisCustomer}</div>
                 <div className="font-semibold text-navy-900 text-lg">{name(persona)}</div>
                 <div className="text-sm text-gray-600">{note(persona)}</div>
-                <div className="text-[11px] text-gray-400 font-mono" dir="ltr">{persona.customer_id} · {t.prefers} {persona.lang === 'ar' ? 'العربية' : 'English'}</div>
+                <div className="text-[11px] text-gray-400 font-mono" dir="ltr">{persona.customer_id}</div>
               </div>
             )}
             <div className="flex gap-1 text-sm">
               {(['trips', 'search'] as const).map((k) => <button key={k} onClick={() => setPanel(k)} className={`chip py-1 px-3 ${panel === k ? 'bg-navy-800 text-white' : 'bg-white text-navy-800 border border-sand-200'}`}>{t[k]}</button>)}
             </div>
-            {panel === 'trips' ? <Trips key={tripsKey} t={t} lang={lang} onAsk={() => undefined} /> : <Search t={t} lang={lang} onAsk={() => undefined} />}
+            {panel === 'trips' ? <Trips key={tripsKey} t={t} lang={lang} onAsk={setPrefill} /> : <Search t={t} lang={lang} onAsk={setPrefill} />}
           </aside>
         )}
       </div>

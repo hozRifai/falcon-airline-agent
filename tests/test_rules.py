@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 
 from falcon.core.clock import GULF
-from falcon.core.models import Booking, FareRules, FlightStatus, Override, Passenger, Segment
+from falcon.core.models import Booking, FareRules, FlightStatus, Passenger, Segment
 from falcon.core.rules import bag_quote, cancellation_quote, change_quote, waiver_quote
 
 NOW = datetime(2026, 10, 20, 9, 0, tzinfo=GULF)
@@ -42,7 +42,7 @@ def test_value_17h_is_past_deadline_and_waiver_possible():
     q = cancellation_quote(b, SAVER, NOW, {})
     assert not q.allowed and q.reason_code == "PAST_DEADLINE" and q.waiver_possible
     w = waiver_quote(b, SAVER, NOW, {}, "credit", waive_fee=False)
-    assert w.allowed and w.refund == Decimal("348.00") and w.details["override"]["ignore_deadline"] is True
+    assert w.allowed and w.refund == Decimal("348.00") and w.details["exception"]["ignore_deadline"] is True
     w2 = waiver_quote(b, SAVER, NOW, {}, "credit", waive_fee=True)
     assert w2.refund == Decimal("448.00")
 
@@ -135,13 +135,14 @@ def test_bag_pricing_and_cutoff():
     assert bag_quote(booking("X", SPECIAL, 1, "480"), SPECIAL, NOW, {}, 20, [1]).reason_code == "TOO_LATE"
 
 
-def test_override_is_recorded_in_quote():
+def test_an_exception_quote_says_what_it_waives():
     b = booking("M8T2LD", SAVER, 17, "448")
-    q = cancellation_quote(b, SAVER, NOW, {}, "credit", Override(ignore_deadline=True, approved_by="u-sara", approval_id=7))
-    assert q.allowed and q.details["override"]["approved_by"] == "u-sara"
+    q = cancellation_quote(b, SAVER, NOW, {}, "credit", ignore_deadline=True)
+    assert q.allowed and q.details["exception"] == {"ignore_deadline": True, "waive_fee": False}
+    assert "exception" not in cancellation_quote(booking("K3P7QZ", SAVER, 35, "1391"), SAVER, NOW, {}).details
 
 
-# ---------------------------------------------------------------- new bookings (decision #30)
+# ---------------------------------------------------------------- new bookings
 from falcon.core.rules import booking_quote  # noqa: E402
 
 
@@ -179,7 +180,7 @@ def test_a_refusal_on_a_short_delay_states_the_five_hour_rule():
     assert "delay" not in plain.reason_en and "delay_minutes" not in plain.details
 
 
-# ---------------------------------------------------------------- fitness to travel (decision #34): Article 7 as thresholds
+# ---------------------------------------------------------------- fitness to travel: Article 7 as thresholds
 import pytest  # noqa: E402
 
 from falcon.core.rules import travel_eligibility  # noqa: E402
@@ -234,7 +235,7 @@ def test_newborns_and_children_alone_follow_clauses_7_4_5_and_7_7():
         travel_eligibility(child_age_years="eight")
 
 
-# ---------------------------------------------------------------- decision #38: what the Conditions grant on bereavement and force majeure
+# ---------------------------------------------------------------- What the Conditions grant on bereavement and force majeure
 from falcon.core.rules import compassionate_quote  # noqa: E402
 
 
@@ -247,3 +248,17 @@ def test_bereavement_refunds_the_fare_paid_and_cites_the_clauses():
     assert fm.allowed and fm.refund_method == "credit" and fm.details["clauses"] == ["3.3.1"] and "3.3.1" in fm.reason_ar
     flown = compassionate_quote(booking("X", SPECIAL, -3, "500"), SPECIAL, NOW, {}, "bereavement")
     assert not flown.allowed and flown.reason_code == "FLOWN"
+
+
+def test_cancelling_some_of_the_passengers_refunds_their_fares_and_keeps_the_booking():
+    """Decision #60: Hozayfa's wife cannot fly at 37 weeks; her seats are cancelled, his stay."""
+    b = booking("H2R4BY", SAVER, 95, "2860", pax=2, fare_per_pax="1430", segments=2)  # two segments at 715 each per passenger
+    q = cancellation_quote(b, SAVER, NOW, {}, "credit", passenger_ids=[2])
+    assert q.allowed and q.fee == Decimal("100.00") and q.refund == Decimal("1330.00")  # her two fares (715 + 715) minus one fee
+    assert q.details["passenger_ids"] == [2] and q.details["remaining"] == 1 and q.details["passengers"] == 1
+    whole = cancellation_quote(b, SAVER, NOW, {}, "credit", passenger_ids=[1, 2])  # naming everyone is a whole-booking cancellation
+    assert "passenger_ids" not in whole.details and whole.refund == Decimal("2660.00")
+    assert cancellation_quote(b, SAVER, NOW, {}, "credit", passenger_ids=[9]).reason_code == "NO_SUCH_PASSENGER"
+    b.passengers[1].cancelled_at = NOW  # once she is cancelled, a quote for the booking is for him alone
+    q2 = cancellation_quote(b, SAVER, NOW, {}, "credit")
+    assert q2.details["passengers"] == 1 and q2.fee == Decimal("100.00")

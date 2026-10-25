@@ -5,11 +5,10 @@ model supplied. A booking that belongs to someone else is simply "not found".
 
 from __future__ import annotations
 
-import hashlib
 import json
 import secrets
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, UTC
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,15 +16,15 @@ from zoneinfo import ZoneInfo
 from falcon.core.arabic import normalize_arabic
 from falcon.core.clock import GULF, now
 from falcon.core.db import Database
-from falcon.core.models import Booking, Extra, FareRules, FlightStatus, Override, Passenger, Quote, Segment
-from falcon.core.rules import cancellation_quote, money
+from falcon.core.models import Booking, Extra, FareRules, Passenger, Quote, Segment
+from falcon.core.rules import money
 
 QUOTE_TTL_MINUTES = 10
 
 
 def _wall() -> datetime:
     """Wall clock for quote expiry (a session concern), unlike the frozen business clock."""
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 class ReservationsRepo:
@@ -78,7 +77,7 @@ class ReservationsRepo:
             """SELECT s.seq, s.flight_instance_id, s.fare_per_pax, fi.flight_number, fi.origin, fi.destination, fi.dep_at, fi.arr_at
                FROM reservations.booking_segments s JOIN reservations.flight_instances fi ON fi.id = s.flight_instance_id
                WHERE s.pnr = %s ORDER BY s.seq""", (b["pnr"],))
-        pax = await self.db.fetch_all("SELECT id, first_name, last_name, pax_type, special_request FROM reservations.passengers WHERE pnr = %s ORDER BY id", (b["pnr"],))
+        pax = await self.db.fetch_all("SELECT id, first_name, last_name, pax_type, special_request, cancelled_at FROM reservations.passengers WHERE pnr = %s ORDER BY id", (b["pnr"],))
         extras = await self.db.fetch_all("SELECT id, passenger_id, kind, kg, price FROM reservations.booking_extras WHERE pnr = %s ORDER BY id", (b["pnr"],))
         return Booking(
             pnr=b["pnr"], customer_id=b["customer_id"], status=b["status"], fare_family=b["fare_family"], currency=b["currency"],
@@ -138,27 +137,33 @@ class ReservationsRepo:
     # ------------------------------------------------------------ write actions (each one transaction)
     async def _claim(self, conn, quote_id: str) -> None:
         """First statement of every write: mark the quote used, only if nobody has. Postgres locks the row, so a second confirmation
-        arriving at the same moment waits for the first to commit, then finds it used (FAILURE_DIARY #73: two simultaneous confirms
-        both passed the earlier "not consumed" check and refunded twice)."""
+        arriving at the same moment waits for the first to commit, then finds it used (two simultaneous confirms both passed the earlier "not consumed" check and refunded twice)."""
         cur = await conn.execute("UPDATE reservations.quotes SET consumed_at=%s WHERE quote_id=%s AND consumed_at IS NULL", (_wall(), quote_id))
         if cur.rowcount != 1:
             raise QuoteAlreadyUsed(quote_id)
 
-    async def execute_cancellation(self, booking: Booking, quote: Quote, quote_id: str | None, override: Override | None = None) -> dict:
+    async def execute_cancellation(self, booking: Booking, quote: Quote, quote_id: str) -> dict:
+        """Cancel the booking, or only the passengers the quote names (decision #60): then the booking stays confirmed for the
+        others, the named passengers are marked cancelled, their seats released and their refund recorded."""
         ts = now()
-        pax = max(1, len([p for p in booking.passengers if p.pax_type != "infant"]))
+        ids = [int(i) for i in (quote.details or {}).get("passenger_ids") or []]
+        pax = len(ids) if ids else max(1, len([p for p in booking.passengers if p.pax_type != "infant" and p.cancelled_at is None]))
         kind = "refund_credit" if quote.refund_method == "credit" else "refund_cash"
         reference = f"{'CR' if kind == 'refund_credit' else 'RF'}-{booking.pnr}-{uuid.uuid4().hex[:6].upper()}"
-        result = {"pnr": booking.pnr, "status": "cancelled", "refund_amount": str(quote.refund), "refund_method": quote.refund_method,
+        names = lambda ps: [f"{p.first_name} {p.last_name}" for p in ps]  # noqa: E731
+        result = {"pnr": booking.pnr, "status": "confirmed" if ids else "cancelled", "refund_amount": str(quote.refund), "refund_method": quote.refund_method,
                   "fee_charged": str(quote.fee), "reference": reference, "cancelled_at": ts.isoformat(), "currency": booking.currency,
-                  "override": override.model_dump(exclude_none=True) if override else None}
+                  **({"cancelled_passengers": names([p for p in booking.passengers if p.id in ids]),
+                      "remaining_passengers": names([p for p in booking.passengers if p.id not in ids and p.cancelled_at is None])} if ids else {})}
         async with self.db.connection() as conn:
             async with conn.transaction():
-                if quote_id:
-                    await self._claim(conn, quote_id)
-                await conn.execute(
-                    "UPDATE reservations.bookings SET status='cancelled', cancelled_at=%s, cancel_reason=%s, refund_method=%s, refund_amount=%s WHERE pnr=%s AND status='confirmed'",
-                    (ts, quote.reason_code, quote.refund_method, quote.refund, booking.pnr))
+                await self._claim(conn, quote_id)
+                if ids:
+                    await conn.execute("UPDATE reservations.passengers SET cancelled_at=%s WHERE pnr=%s AND id = ANY(%s) AND cancelled_at IS NULL", (ts, booking.pnr, ids))
+                else:
+                    await conn.execute(
+                        "UPDATE reservations.bookings SET status='cancelled', cancelled_at=%s, cancel_reason=%s, refund_method=%s, refund_amount=%s WHERE pnr=%s AND status='confirmed'",
+                        (ts, quote.reason_code, quote.refund_method, quote.refund, booking.pnr))
                 await conn.execute("INSERT INTO reservations.transactions(pnr,kind,amount,currency,reference,created_at) VALUES (%s,%s,%s,%s,%s,%s)",
                                    (booking.pnr, kind, quote.refund, booking.currency, reference, ts))
                 if quote.fee > 0:
@@ -166,8 +171,7 @@ class ReservationsRepo:
                                        (booking.pnr, quote.fee, booking.currency, f"FEE-{booking.pnr}", ts))
                 for seg in booking.segments:
                     await conn.execute("UPDATE reservations.flight_instances SET seats_sold = greatest(0, seats_sold - %s) WHERE id = %s", (pax, seg.flight_instance_id))
-                if quote_id:
-                    await conn.execute("UPDATE reservations.quotes SET consumed_at=%s, consumed_result=%s WHERE quote_id=%s", (_wall(), json.dumps(result), quote_id))
+                await conn.execute("UPDATE reservations.quotes SET consumed_at=%s, consumed_result=%s WHERE quote_id=%s", (_wall(), json.dumps(result), quote_id))
         return result
 
     async def execute_change(self, booking: Booking, quote: Quote, quote_id: str) -> dict:
@@ -254,21 +258,7 @@ class ReservationsRepo:
                 await conn.execute("UPDATE reservations.quotes SET consumed_at=%s, consumed_result=%s WHERE quote_id=%s", (_wall(), json.dumps(result), quote_id))
         return result
 
-    # ------------------------------------------------------------ attachments (decision #33)
-    async def store_attachment(self, customer_id: str, filename: str, content_type: str, data: bytes) -> dict:
-        return await self.db.fetch_one(
-            "INSERT INTO reservations.attachments(customer_id,filename,content_type,size_bytes,sha256,data,uploaded_at) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id, filename, content_type, size_bytes, uploaded_at",
-            (customer_id, filename, content_type, len(data), hashlib.sha256(data).hexdigest(), data, now()))
-
-    async def attachments(self, customer_id: str, ids: list[int] | None = None) -> list[dict]:
-        """The customer's attachments (name, type, size, time; never the bytes), all of them or the given ids that are theirs."""
-        if ids is None:
-            return await self.db.fetch_all("SELECT id, filename, content_type, size_bytes, uploaded_at FROM reservations.attachments WHERE customer_id = %s ORDER BY id", (customer_id,))
-        if not ids:
-            return []
-        return await self.db.fetch_all("SELECT id, filename, content_type, size_bytes, uploaded_at FROM reservations.attachments WHERE customer_id = %s AND id = ANY(%s) ORDER BY id", (customer_id, ids))
-
-    # ------------------------------------------------------------ email (decision #32)
+    # ------------------------------------------------------------ email
     async def queue_email(self, customer_id: str, pnr: str | None, to_email: str, subject: str, body: str) -> dict:
         return await self.db.fetch_one(
             "INSERT INTO reservations.email_outbox(pnr,customer_id,to_email,subject,body,status,created_at) VALUES (%s,%s,%s,%s,%s,'queued',%s) RETURNING id, status, created_at",
@@ -281,21 +271,12 @@ class ReservationsRepo:
             (pnr, customer_id, kind, reason, json.dumps(proposed, default=str) if proposed else None, now()))
         return row
 
-    async def request(self, request_id: int, customer_id: str | None = None) -> dict | None:
-        if customer_id:
-            return await self.db.fetch_one("SELECT * FROM reservations.approval_requests WHERE id = %s AND customer_id = %s", (request_id, customer_id))
-        return await self.db.fetch_one("SELECT * FROM reservations.approval_requests WHERE id = %s", (request_id,))
+    async def request(self, request_id: int, customer_id: str) -> dict | None:
+        return await self.db.fetch_one("SELECT * FROM reservations.approval_requests WHERE id = %s AND customer_id = %s", (request_id, customer_id))
 
-    async def pending_requests(self) -> list[dict]:
-        return await self.db.fetch_all(
-            """SELECT r.*, c.first_name || ' ' || c.last_name AS customer_name, c.preferred_lang
-               FROM reservations.approval_requests r JOIN reservations.customers c ON c.customer_id = r.customer_id
-               WHERE r.status = 'pending' ORDER BY r.created_at""")
-
-    async def recent_requests(self, limit: int = 20) -> list[dict]:
-        return await self.db.fetch_all(
-            """SELECT r.*, c.first_name || ' ' || c.last_name AS customer_name FROM reservations.approval_requests r
-               JOIN reservations.customers c ON c.customer_id = r.customer_id ORDER BY r.created_at DESC LIMIT %s""", (limit,))
+    async def pending_request(self, pnr: str) -> dict | None:
+        """The open case on a booking, if any: one case per booking at a time."""
+        return await self.db.fetch_one("SELECT * FROM reservations.approval_requests WHERE pnr = %s AND status = 'pending' ORDER BY created_at LIMIT 1", (pnr,))
 
 
 class QuoteAlreadyUsed(Exception):
@@ -304,8 +285,3 @@ class QuoteAlreadyUsed(Exception):
 
 def quote_for_record(record: dict) -> Quote:
     return Quote.model_validate_json(record["result"]) if isinstance(record["result"], str) else Quote.model_validate(record["result"])
-
-
-def recompute_cancellation(booking: Booking, rules: FareRules, statuses: dict[str, FlightStatus], request: dict) -> Quote:
-    override = Override.model_validate(request["override"]) if request.get("override") else None
-    return cancellation_quote(booking, rules, now(), statuses, request.get("refund_method", "credit"), override)

@@ -1,12 +1,8 @@
-"""A scripted stand-in for the language model.
+"""A scripted stand-in for the language model: keyword rules over the real tools.
 
-Two uses:
-1. Tests: the graph, the confirmation gate, identity injection and the evaluation harness are exercised
-   without any API key or cost. `ScriptedChatModel` replays a fixed list of responses.
-2. Demo without a key: `RuleBasedFakeModel` follows simple keyword rules through the real tools, so the
-   web app, the "What I checked" panel and the confirm button can be seen working end to end. It is
-   obviously not an LLM: it does not understand, it pattern-matches. Switch LLM_PROVIDER / add a key
-   for the real thing.
+It lets the tests and the keyless demo exercise the whole system (the graph, the confirmation gate, the reviewer, the evaluation
+harness) without a key or a cost, and the web app shows every flow working end to end. It is obviously not an LLM: it does not
+understand, it pattern-matches. Add OPENROUTER_API_KEY for the real thing.
 """
 
 from __future__ import annotations
@@ -14,7 +10,8 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from typing import Any, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
@@ -47,39 +44,8 @@ def _content_json(msg: BaseMessage) -> Any:
         content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
     try:
         return json.loads(content)
-    except Exception:
+    except (json.JSONDecodeError, TypeError):
         return None
-
-
-class ScriptedChatModel(BaseChatModel):
-    """Replays responses in order. Each item is an AIMessage or a dict {content, tool_calls}."""
-
-    script: list[Any] = []
-    tools: list[Any] = []
-    index: int = 0
-
-    @property
-    def _llm_type(self) -> str:
-        return "scripted-fake"
-
-    def bind_tools(self, tools: Sequence[Any], **kwargs: Any):
-        clone = self.model_copy()
-        clone.tools = list(tools)
-        clone.script = self.script  # share the cursor
-        return clone
-
-    def _next(self) -> AIMessage:
-        if self.index >= len(self.script):
-            return AIMessage(content="(script exhausted)")
-        item = self.script[self.index]
-        self.script[self.index] = item  # keep
-        type(self).index = self.index + 1  # advance shared cursor
-        if isinstance(item, AIMessage):
-            return item
-        return AIMessage(content=item.get("content", ""), tool_calls=[_tool_call(tc["name"], tc.get("args", {})) for tc in item.get("tool_calls", [])])
-
-    def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: CallbackManagerForLLMRun | None = None, **kwargs: Any) -> ChatResult:
-        return ChatResult(generations=[ChatGeneration(message=self._next())])
 
 
 class RuleBasedFakeModel(BaseChatModel):
@@ -101,15 +67,11 @@ class RuleBasedFakeModel(BaseChatModel):
         return any(getattr(t, "name", None) == name for t in self.tools)
 
     @staticmethod
-    def _meta(messages: list[BaseMessage]) -> tuple[str, str]:
-        role, lang = "customer", "en"
+    def _lang(messages: list[BaseMessage]) -> str:
         for m in messages:
-            if isinstance(m, SystemMessage):
-                r = re.search(r"ROLE:\s*(\w+)", m.content if isinstance(m.content, str) else "")
-                l = re.search(r"REPLY_LANGUAGE:\s*(\w+)", m.content if isinstance(m.content, str) else "")
-                role = r.group(1) if r else role
-                lang = l.group(1) if l else lang
-        return role, lang
+            if isinstance(m, SystemMessage) and isinstance(m.content, str) and (r := re.search(r"REPLY_LANGUAGE:\s*(\w+)", m.content)):
+                return r.group(1)
+        return "en"
 
     @staticmethod
     def _name(messages: list[BaseMessage]) -> str:
@@ -129,7 +91,7 @@ class RuleBasedFakeModel(BaseChatModel):
 
     @staticmethod
     def _disclosures(messages: list[BaseMessage]) -> tuple[dict[str, tuple[int | None, str | None]], str]:
-        """The guardrail note of this turn (guardrails.describe_disclosure, decision #34): kind -> (figure, unit), and the first question
+        """The guardrail note of this turn (guardrails.describe_disclosure): kind -> (figure, unit), and the first question
         the note asks search_policy. The real model reads the same note; this is the scripted model's version of noticing."""
         labels = (("a pregnancy", "pregnancy"), ("a newborn or infant", "infant"), ("a child travelling alone", "child_alone"),
                   ("a medical condition, illness or recent surgery", "medical"), ("a special-assistance need", "assistance"), ("an animal", "animal"),
@@ -162,7 +124,7 @@ class RuleBasedFakeModel(BaseChatModel):
 
     # ------------------------------------------------------------ main
     def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None, run_manager: CallbackManagerForLLMRun | None = None, **kwargs: Any) -> ChatResult:
-        role, lang = self._meta(messages)
+        lang = self._lang(messages)
         human = self._last_human(messages)
         low = human.lower()
         results = self._tool_results(messages)
@@ -227,16 +189,6 @@ class RuleBasedFakeModel(BaseChatModel):
             if last_tool == "cancel_booking" and isinstance(last_res, dict):
                 return ai(T(f"Done. Booking {last_res.get('pnr')} is cancelled; {last_res.get('refund_amount')} AED will be refunded as {last_res.get('refund_method')} (reference {last_res.get('reference')}).",
                             f"تم. الحجز {last_res.get('pnr')} ملغى؛ سيتم استرداد {last_res.get('refund_amount')} درهم ({last_res.get('refund_method')}) — المرجع {last_res.get('reference')}."))
-            if last_tool == "list_my_attachments" and isinstance(last_res, dict):
-                atts = last_res.get("attachments") or []
-                pnr = next((r.get("pnr") for _, r in reversed(results) if isinstance(r, dict) and r.get("pnr")), None) or (PNR_RE.search(human.upper()).group(0) if PNR_RE.search(human.upper()) else None)
-                if atts and pnr and self._has("request_exception"):
-                    humans = " ".join((getattr(m, "content", "") or "") for m in messages if getattr(m, "type", "") == "human").lower()
-                    kind = "bereavement" if any(k in humans for k in ("passed away", "died", "death", "توفي", "وفاة")) else "late_cancellation"
-                    return ai("", [{"name": "request_exception", "args": {"pnr": pnr, "kind": kind, "reason": human[:300], "refund_method": "credit",
-                                                                          "evidence_attachment_ids": [a["id"] for a in atts]}}])
-                return ai(T("An exception case for a medical reason needs supporting evidence. Please attach your doctor's note or document with the paperclip in the chat, and I will log the case with it.",
-                            "تسجيل حالة استثناء لسبب طبي يحتاج إلى مستند داعم. يرجى إرفاق التقرير الطبي أو المستند بزر المشبك في المحادثة، وسأسجّل الحالة معه."))
             if last_tool == "request_exception" and isinstance(last_res, dict):
                 return ai(T(f"I have logged case #{last_res.get('request_id')} for our customer-care team with your reason and the proposed refund. You will receive an email once it has been reviewed; nothing changes on the booking until then.",
                             f"سجّلت الحالة رقم #{last_res.get('request_id')} لفريق خدمة العملاء مع سببك والمبلغ المقترح. ستصلك رسالة بالبريد الإلكتروني بعد مراجعتها؛ لن يتغير شيء في الحجز حتى ذلك الحين."))
@@ -277,8 +229,8 @@ class RuleBasedFakeModel(BaseChatModel):
                 if last_res.get("status") == "ok":
                     lines.append(T("Nothing in the Conditions prevents the trip as described.", "لا شيء في شروط النقل يمنع الرحلة كما وصفتها."))
                 else:
-                    lines.append(T("If this means you cannot travel as booked, I can quote a cancellation under your fare rules, or log an exception case for the customer-care team with your medical document attached. Which would you prefer?",
-                                   "إن كان هذا يعني أنك لن تتمكني من السفر كما هو محجوز، يمكنني تسعير الإلغاء وفق قواعد درجتك، أو تسجيل حالة استثناء لفريق خدمة العملاء مع إرفاق المستند الطبي. ماذا تفضّلين؟"))
+                    lines.append(T("If this means you cannot travel as booked, I can quote a cancellation under your fare rules, or log an exception case for the customer-care team, who will ask you for the medical document by email. Which would you prefer?",
+                                   "إن كان هذا يعني أنك لن تتمكني من السفر كما هو محجوز، يمكنني تسعير الإلغاء وفق قواعد درجتك، أو تسجيل حالة استثناء لفريق خدمة العملاء الذي سيطلب منك المستند الطبي بالبريد الإلكتروني. ماذا تفضّلين؟"))
                 return ai("\n".join(lines))
             if last_tool == "search_policy" and isinstance(last_res, dict):
                 hits = last_res.get("results", [])[:2]
@@ -291,7 +243,7 @@ class RuleBasedFakeModel(BaseChatModel):
         # ---- first step for a new user message
         if opening and self._has("list_my_bookings"):
             return ai("", [{"name": "list_my_bookings", "args": {}}])
-        disclosed, check_question = self._disclosures(messages)  # decision #34: the Conditions are checked before anything else in the turn
+        disclosed, check_question = self._disclosures(messages)  # The Conditions are checked before anything else in the turn
         if disclosed and self._has("check_travel_eligibility"):
             args: dict[str, Any] = {}
             if "pregnancy" in disclosed and disclosed["pregnancy"][0] is not None:
@@ -311,7 +263,6 @@ class RuleBasedFakeModel(BaseChatModel):
         pnr_m = PNR_RE.search(human.upper())
         pnr_txt = pnr_m.group(0) if pnr_m else None
         quote_id = next((r.get("quote_id") for _, r in reversed(results) if isinstance(r, dict) and r.get("quote_id") and r.get("allowed")), None)
-        # customer
         if any(k in low for k in ("yes", "confirm", "go ahead", "نعم", "أكد", "موافق", "تابع")) and quote_id:
             quoted = next((r for _, r in reversed(results) if isinstance(r, dict) and r.get("quote_id") == quote_id), {})
             if quoted.get("kind") == "book":
@@ -327,12 +278,12 @@ class RuleBasedFakeModel(BaseChatModel):
             if pnr:
                 return ai("", [{"name": "send_itinerary", "args": {"pnr": pnr}}])
             return ai("", [{"name": "list_my_bookings", "args": {}}])
-        if any(k in low for k in ("exception", "استثناء", "supervisor", "مشرف", "attached", "attachment", "أرفقت", "مرفق", "passed away", "died", "death", "توفي", "وفاة")):
+        if any(k in low for k in ("exception", "استثناء", "supervisor", "مشرف", "passed away", "died", "death", "توفي", "وفاة")):
             pnr = pnr_txt if pnr_m else next((r.get("pnr") for _, r in reversed(results) if isinstance(r, dict) and r.get("pnr")), None)
-            if pnr and self._has("list_my_attachments"):
-                return ai("", [{"name": "list_my_attachments", "args": {}}])  # evidence first (decision #33); the result decides what happens next
             if pnr:
-                return ai("", [{"name": "request_exception", "args": {"pnr": pnr, "kind": "late_cancellation", "reason": human[:300], "refund_method": "credit"}}])
+                humans = " ".join((getattr(m, "content", "") or "") for m in messages if getattr(m, "type", "") == "human").lower()
+                kind = "bereavement" if any(k in humans for k in ("passed away", "died", "death", "توفي", "وفاة")) else "late_cancellation"
+                return ai("", [{"name": "request_exception", "args": {"pnr": pnr, "kind": kind, "reason": human[:300], "refund_method": "credit"}}])
         if any(k in low for k in ("cancel", "إلغاء", "الغي", "ألغ", "الغ", "إلغ", "refund", "استرداد")):
             if pnr_m and self._has("quote_cancellation"):
                 method = "cash" if any(k in low for k in ("cash", "card", "original", "بطاقة", "نقد")) else "credit"

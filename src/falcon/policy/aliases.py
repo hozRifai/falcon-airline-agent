@@ -1,4 +1,4 @@
-"""Customer words -> the contract's words, appended to the query before it is embedded (decision #39, measured in docs/EVALUATION.md §1).
+"""Customer words -> the contract's words, appended to the query before it is embedded (measured in docs/EVALUATION.md §1).
 
 The two standing misses of the retrieval gold set were vocabulary gaps no rewrite closed: "I missed my outbound flight, is my return
 still valid?" is, in the Conditions, "cancellation of onward reservations" and "fail to check-in" (5.7.1); "cancellation due to a medical

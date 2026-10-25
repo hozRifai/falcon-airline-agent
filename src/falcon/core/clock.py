@@ -22,12 +22,3 @@ def now() -> datetime:
     if value == "wallclock":
         return datetime.now(tz=GULF)
     return datetime.fromisoformat(value).astimezone(GULF)
-
-
-def hours_until(when: datetime, reference: datetime | None = None) -> float:
-    reference = reference or now()
-    return (when - reference).total_seconds() / 3600.0
-
-
-def iso(dt: datetime) -> str:
-    return dt.astimezone(GULF).isoformat(timespec="minutes")

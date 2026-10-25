@@ -32,10 +32,10 @@ else
   $DC down -v --remove-orphans
   if [ "$MODE" = clean ]; then
     step "Building the image from zero (5-10 min the first time)"
-    $DC build --no-cache
+    $DC --profile init --profile eval build --no-cache   # the profiled images seed the database: build them too (22 Oct: a stale eval image reseeded old dates)
   else
     step "Building the image (cached layers are reused)"
-    $DC build
+    $DC --profile init --profile eval build
   fi
 fi
 
@@ -52,7 +52,7 @@ wait_for_runtime
 
 echo
 echo "Ready."
-echo "  App:          http://localhost:8000   $( [ -n "$(access_code)" ] && echo "(access code: $(access_code))" || echo "(no access code: pick a customer)")"
+echo "  App:          http://localhost:8000   (pick a customer in the left sidebar)"
 echo "  Postgres:     localhost:5433 (user postgres / password from .env)"
 echo "  Logs:         $DC logs -f runtime"
 echo "  Stop:         $DC down          (keeps the data; next time just run scripts/up.sh)"

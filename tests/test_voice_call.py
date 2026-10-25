@@ -86,6 +86,19 @@ async def test_a_very_slow_reply_gets_the_second_phrase_once_and_never_a_third()
     assert spoken == [("progress", PROGRESS["ar"]), ("progress", STILL["ar"]), ("reply", "ok.")]
 
 
+async def test_the_opening_phrase_is_said_on_the_first_turn_only():
+    rt = DelayedRuntime(0.1, *[[("done", {"message": "ok", "pending": None})]] * 2)
+    call, spoken, _ = session(rt, "ar")
+    await call.handle("أريد إلغاء حجزي")
+    await call.handle("نعم، كرصيد سفر")
+    assert [k for k, _ in spoken] == ["progress", "reply", "reply"] and spoken[0][1] == PROGRESS["ar"]  # the second slow turn gets no filler
+    rt2 = DelayedRuntime(0.6, *[[("done", {"message": "ok", "pending": None})]] * 2)
+    call2, spoken2, _ = session(rt2, "ar")
+    await call2.handle("أريد إلغاء حجزي")
+    await call2.handle("كم المبلغ؟")
+    assert spoken2[-2:] == [("progress", STILL["ar"]), ("reply", "ok.")]  # a very slow later turn still gets the long-wait phrase, once
+
+
 async def test_the_card_is_spoken_and_a_bare_yes_presses_confirm():
     rt = FakeRuntime([("done", {"message": "الرسوم 100.00 AED.", "pending": PENDING})], [("done", {"message": "تم إلغاء الحجز K3P7QZ.", "pending": None})])
     call, spoken, _ = session(rt)

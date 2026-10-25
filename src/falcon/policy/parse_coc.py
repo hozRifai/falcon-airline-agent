@@ -185,19 +185,19 @@ def _fix_number_typo(num: str, article: int) -> str:
 
 def _lines(raw: str) -> list[str]:
     out = []
-    for l in raw.splitlines():
-        l = fold_digits(l).replace(" ", " ").strip()
-        if not l or re.fullmatch(r"\d{1,3}", l) or re.fullmatch(r"[.…\s]+", l):
+    for line in raw.splitlines():
+        line = fold_digits(line).replace(" ", " ").strip()
+        if not line or re.fullmatch(r"\d{1,3}", line) or re.fullmatch(r"[.…\s]+", line):
             continue
-        out.append(l)
+        out.append(line)
     return out
 
 
 def _arabic_headings(lines: list[str]) -> dict[int, tuple[int, str, int]]:
     """Body headings: 'المادة4' then '—' then the title (or '- title' on one line). Returns {line index: (n, title, next index)}."""
     heads = {}
-    for i, l in enumerate(lines):
-        m = ART_AR.match(l)
+    for i, line in enumerate(lines):
+        m = ART_AR.match(line)
         if not m:
             continue
         n, title, k = int(m.group(1)), "", i + 1
@@ -221,10 +221,10 @@ def _parse(raw: str, lang: str) -> tuple[list[str], list[Clause]]:
     art1: list[str] = []
     i = 0
     while i < len(lines):
-        l = lines[i]
+        line = lines[i]
         if lang == "en":
-            m = ART_EN.match(l)
-            if m and "...." not in l:
+            m = ART_EN.match(line)
+            if m and "...." not in line:
                 n = int(m.group(1))
                 if not (in_toc and n != 1):
                     in_toc = False
@@ -251,10 +251,10 @@ def _parse(raw: str, lang: str) -> tuple[list[str], list[Clause]]:
             i += 1
             continue
         if article == 1:
-            art1.append(l)
+            art1.append(line)
             i += 1
             continue
-        nm = NUM_LINE.match(l) or NUM_INLINE.match(l)
+        nm = NUM_LINE.match(line) or NUM_INLINE.match(line)
         num = _fix_number_typo(nm.group(1), article) if nm else None
         if nm and int(num.split(".")[0]) in (article, article + 1) and (cur is None or _key(num) > _key(cur.clause_id)):
             # numbers only move forward: a lone "7.1" after 7.1.3 is a cross-reference split from its "Article"
@@ -265,11 +265,11 @@ def _parse(raw: str, lang: str) -> tuple[list[str], list[Clause]]:
             i += 1
             continue
         if lang == "ar":
-            l = _trailing_punct(l)
+            line = _trailing_punct(line)
         if cur is None:
-            cur = Clause(f"{article}.0", article, title, l)
+            cur = Clause(f"{article}.0", article, title, line)
         else:
-            cur.text = (cur.text + " " + l).strip()
+            cur.text = (cur.text + " " + line).strip()
         i += 1
     if cur:
         clauses.append(cur)
@@ -282,12 +282,12 @@ def _parse(raw: str, lang: str) -> tuple[list[str], list[Clause]]:
 def _definitions_en(art1: list[str]) -> list[tuple[str, str]]:
     """[(term, full text)] in document order."""
     defs: list[list[str]] = []
-    for l in art1:
-        m = DEF_EN.match(l)
+    for line in art1:
+        m = DEF_EN.match(line)
         if m:
-            defs.append([m.group(1), l])
+            defs.append([m.group(1), line])
         elif defs:
-            defs[-1][1] += " " + l
+            defs[-1][1] += " " + line
     return [(t, re.sub(r"\s+", " ", x)) for t, x in defs]
 
 
@@ -295,21 +295,21 @@ def _definitions_ar(art1: list[str]) -> list[tuple[str, str]]:
     defs: list[list[str]] = []
     pending: str | None = None
     for raw_line in art1:
-        l = raw_line.lstrip(".:،؛ ")  # RTL extraction puts the sentence's final period at the start of the line
-        if DEF_AR_VERB.match(l):
+        line = raw_line.lstrip(".:،؛ ")  # RTL extraction puts the sentence's final period at the start of the line
+        if DEF_AR_VERB.match(line):
             if pending is not None:
-                defs.append([pending, pending + " " + l])
+                defs.append([pending, pending + " " + line])
                 pending = None
             elif defs:
-                defs[-1][1] += " " + l
-        elif QUOTE.match(raw_line) and len(l) < 90 and "." not in l and not DEF_AR_VERB.search(l):  # term lines START with a quote
+                defs[-1][1] += " " + line
+        elif QUOTE.match(raw_line) and len(line) < 90 and "." not in line and not DEF_AR_VERB.search(line):  # term lines START with a quote
             if pending:
                 defs.append([pending, pending])
-            pending = l.strip('"“” ')
+            pending = line.strip('"“” ')
         elif pending is not None:
-            pending += " " + l
+            pending += " " + line
         elif defs:
-            defs[-1][1] += " " + l
+            defs[-1][1] += " " + line
     if pending:
         defs.append([pending, pending])
     return [(t, re.sub(r"\s+", " ", x)) for t, x in defs]
