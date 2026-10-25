@@ -1,4 +1,4 @@
-"""Tracing (decision #27): spans exist where the agent's own logic lives, and ids are available for the audit log and the UI.
+"""Tracing: spans exist where the agent's own logic lives, and ids are available for the audit log and the UI.
 
 Runs with an in-memory exporter: no collector, no key. The LangChain instrumentation is switched on by setup_tracing, so
 the scripted graph run below also produces the automatic LangGraph spans; we only assert on our own.
@@ -29,7 +29,7 @@ def _run(drafts: list[str], thread: str) -> dict:
     model = ScriptedModel(messages=iter([AIMessage(content=d) for d in drafts]))
     graph = build_graph(MemorySaver())
     config = {"configurable": {"thread_id": thread, "tools": [], "llm": model, "default_lang": "en"}}
-    initial = {"messages": [HumanMessage(content="what do I get back if I cancel?")], "role": "customer", "user_name": "Test", "preferred_lang": "en"}
+    initial = {"messages": [HumanMessage(content="what do I get back if I cancel?")], "user_name": "Test"}
     asyncio.run(graph.ainvoke(initial, config))
     return asyncio.run(graph.aget_state(config)).values
 

@@ -1,4 +1,4 @@
-"""The reviewer loop (decision #26): deterministic checks shared with the scorer, the retry with a precise nudge, the hold.
+"""The reviewer loop: deterministic checks shared with the scorer, the retry with a precise nudge, the hold.
 
 No database and no key: the graph runs with an in-memory checkpointer and a stub model that returns scripted drafts.
 """
@@ -81,7 +81,7 @@ def _search_turn(customer: str, calls: list[dict]) -> list:
 
 
 def test_a_period_searched_as_one_day_is_sent_back_with_the_day():
-    # FAILURE_DIARY #39: "next week" → search_flights(date_from=2026-10-27) → "the cheapest is FA951 at 965" (the 26th was 900)
+    # "next week" → search_flights(date_from=2026-10-27) → "the cheapest is FA951 at 965" (the 26th was 900)
     draft = AIMessage(content="The cheapest flight from Dubai to Beirut on 27 October is FA951: Special 965 AED.")
     r = review_draft(draft, _search_turn("I want to book a flight the next week, find me the cheapest one from dubai to beirut", [{"origin": "DXB", "destination": "BEY", "date_from": "2026-10-27"}]))
     assert r.problems == ["period_searched_as_one_day"] and "2026-10-27" in r.nudge and "date_to" in r.nudge
@@ -108,7 +108,7 @@ def test_scope_check_stays_quiet_when_one_day_is_right_or_nothing_was_presented(
 class ScriptedModel(GenericFakeChatModel):
     """Returns the scripted drafts in order; bind_tools is a no-op so the graph can use it like a real model."""
 
-    def bind_tools(self, tools: Any, **kwargs: Any):  # noqa: D401
+    def bind_tools(self, tools: Any, **kwargs: Any):
         return self
 
 
@@ -116,7 +116,7 @@ def _run(drafts: list[str], human: str = "what do I get back if I cancel?", lang
     model = ScriptedModel(messages=iter([AIMessage(content=d) for d in drafts]))
     graph = build_graph(MemorySaver())
     config = {"configurable": {"thread_id": "t1", "tools": [], "llm": model, "default_lang": lang_hint}}
-    initial = {"messages": [HumanMessage(content=human)], "role": "customer", "user_name": "Test", "preferred_lang": lang_hint}
+    initial = {"messages": [HumanMessage(content=human)], "user_name": "Test", "preferred_lang": lang_hint}
     asyncio.run(graph.ainvoke(initial, config))
     return asyncio.run(graph.aget_state(config)).values
 
@@ -149,7 +149,7 @@ def test_replies_without_money_or_claims_pass(text):
     assert values["verification"]["status"] == "verified" and values["verification"]["amounts"] == []
 
 
-# ---------------------------------------------------------------- language and policy answers (FAILURE_DIARY #43)
+# ---------------------------------------------------------------- language and policy answers
 from falcon.services.runtime.review import cited_clause_ids  # noqa: E402
 
 SEARCH = json.dumps({"results": [{"clause_id": "7.4.4", "text_en": "It is your responsibility to check if Article 7.4.1, 7.4.2 or 7.4.3 applies to you."},
@@ -179,7 +179,7 @@ def test_policy_figures_must_come_from_the_retrieved_text():
 
 def test_cited_clauses_must_have_been_retrieved():
     assert cited_clause_ids("See clauses 7.4.1 and 7.4.3, Article 10.2.1 and [8.1]; البند 8.10.") == ["7.4.1", "7.4.3", "10.2.1", "8.1", "8.10"]
-    # FAILURE_DIARY #50: the forms DeepSeek writes in Arabic (a preposition drops the article's alef) and with markdown emphasis
+    # The forms DeepSeek writes in Arabic (a preposition drops the article's alef) and with markdown emphasis
     assert cited_clause_ids("وفقًا للبند **6.1** من شروط النقل، يجب الحضور قبل **3 ساعات**.") == ["6.1"]
     assert cited_clause_ids("وفقًا للفقرة 3.2.1 والمادة رقم 10.2 وبالبند 7.4.1 و7.4.3") == ["3.2.1", "10.2", "7.4.1", "7.4.3"]
     assert cited_clause_ids("According to **clause 13.2.1**, and clause **13.2.2** states; see clauses **7.4.1** and **7.4.3**.") == ["13.2.1", "13.2.2", "7.4.1", "7.4.3"]
@@ -235,7 +235,7 @@ def test_announcing_an_action_or_a_confirm_button_without_a_tool_call_is_sent_ba
     assert _reply_problem(AIMessage(content="Done: your booking is cancelled."), {"turn_tool_calls": 2}) is None
 
 
-# ---------------------------------------------------------------- disclosed facts (decision #34, FAILURE_DIARY #48)
+# ---------------------------------------------------------------- disclosed facts
 LAYLA = "جميل. أنا حامل في شهري الثامن والثلاثين, سأسافر في الوقت المحدد ان شاء الله"
 PREGNANT = {"label": "small_talk", "action": "allow", "disclosures": [{"kind": "pregnancy", "detail": "حامل في شهري الثامن والثلاثين", "value": 38, "unit": "months",
                                                                       "check": "pregnant passengers: until which week can I fly?", "source": "rules"}]}
@@ -329,7 +329,7 @@ def test_the_graph_remembers_disclosed_kinds_across_turns():
     model = ScriptedModel(messages=iter([AIMessage(content=WISH) for _ in range(10)]))  # distinct objects: a reused message keeps the id the state gave it
     graph = build_graph(MemorySaver())
     config = {"configurable": {"thread_id": "t2", "tools": [], "llm": model, "default_lang": "ar"}}
-    asyncio.run(graph.ainvoke({"messages": [HumanMessage(content=LAYLA)], "role": "customer", "user_name": "Layla", "preferred_lang": "ar"}, config))
+    asyncio.run(graph.ainvoke({"messages": [HumanMessage(content=LAYLA)], "user_name": "Layla"}, config))
     first = asyncio.run(graph.aget_state(config)).values
     assert first["disclosed"] == ["pregnancy"] and first["guardrail"]["repeat"] == []
     asyncio.run(graph.ainvoke({"messages": [HumanMessage(content="أنا حامل في الأسبوع الثامن والثلاثين بجنين واحد")]}, config))
@@ -339,7 +339,7 @@ def test_the_graph_remembers_disclosed_kinds_across_turns():
 
 
 def test_an_arabic_draft_citing_with_a_preposition_and_emphasis_passes_the_policy_checks():
-    # FAILURE_DIARY #50: "وفقًا للبند **6.1**" was sent back four times for "no citation" and the customer got the held message
+    # "وفقًا للبند **6.1**" was sent back four times for "no citation" and the customer got the held message
     from falcon.services.runtime.review import policy_problems
 
     result = json.dumps({"query": "q", "available": True, "results": [{"clause_id": "6.1", "article": "6 – Check-in and boarding",
@@ -351,7 +351,7 @@ def test_an_arabic_draft_citing_with_a_preposition_and_emphasis_passes_the_polic
     assert [p for p, _ in policy_problems("وفقًا لشروط النقل، قبل 3 ساعات.", [("search_policy", result)])] == ["uncited_policy_answer"]
 
 
-# ---------------------------------------------------------------- decision #37: no citation, no answer; a citation must be supported
+# ---------------------------------------------------------------- No citation, no answer; a citation must be supported
 def test_a_rules_question_answered_without_the_document_is_sent_back():
     from falcon.services.runtime.review import consulted_this_turn, policy_question_problem
     fare = ToolMessage(content=json.dumps({"fare_families": [{"code": "SAVER", "cancel_or_change_deadline_hours_before_departure": 24}]}), tool_call_id="1", name="get_fare_rules")
@@ -404,7 +404,7 @@ def test_a_rules_engine_result_naming_its_clauses_is_a_source_for_them():
     assert "policy_without_source" in review_draft(other, [HumanMessage(content="bags?"), ToolMessage(content=case, tool_call_id="1", name="request_exception")], lang="en").problems
 
 
-# ---------------------------------------------------------------- decision #41: a bare "yes" after a quote raises the card without the model
+# ---------------------------------------------------------------- A bare "yes" after a quote raises the card without the model
 def test_a_bare_yes_after_an_open_quote_raises_the_card_without_the_model():
     from falcon.services.runtime.graph import confirmation_shortcut, is_bare_confirmation, open_quote
     for text in ["نعم", "نعم، تابع الإلغاء", "yes please", "ok go ahead", "موافق", "Confirm."]:
@@ -423,12 +423,12 @@ def test_a_bare_yes_after_an_open_quote_raises_the_card_without_the_model():
     model = ScriptedModel(messages=iter([]))
     graph = build_graph(MemorySaver())
     config = {"configurable": {"thread_id": "t-confirm", "tools": [], "llm": model, "default_lang": "ar"}}
-    asyncio.run(graph.ainvoke({"messages": msgs, "role": "customer", "user_name": "Fatima", "preferred_lang": "ar"}, config))
+    asyncio.run(graph.ainvoke({"messages": msgs, "user_name": "Fatima"}, config))
     snap = asyncio.run(graph.aget_state(config))
     assert snap.values["messages"][-1].tool_calls[0]["name"] == "cancel_booking" and snap.tasks and snap.tasks[0].interrupts
 
 
-# ---------------------------------------------------------------- decision #43: two unresolved replies in a row hand over to a human
+# ---------------------------------------------------------------- Two unresolved replies in a row hand over to a human
 def test_two_held_replies_in_a_row_log_a_handover_case_and_say_so():
     from langchain_core.tools import tool as make_tool
 
@@ -446,7 +446,7 @@ def test_two_held_replies_in_a_row_log_a_handover_case_and_say_so():
     model = ScriptedModel(messages=iter([AIMessage(content=d) for d in bad * 2 + ["يمكنني تسعير الإلغاء لك، هل أتحقق؟"]]))
     graph = build_graph(MemorySaver())
     config = {"configurable": {"thread_id": "t-escalate", "tools": [handover_to_human], "llm": model, "default_lang": "ar"}}
-    base = {"role": "customer", "user_name": "Fatima", "preferred_lang": "ar"}
+    base = {"user_name": "Fatima"}
     asyncio.run(graph.ainvoke({"messages": [HumanMessage(content="كم سأسترد إذا ألغيت؟")], **base}, config))
     first = asyncio.run(graph.aget_state(config)).values
     assert first["verification"]["status"] == "held" and first["unresolved"] == 1 and calls == []  # one miss is not a reason to hand over
@@ -476,7 +476,7 @@ def test_a_held_reply_after_a_good_one_does_not_hand_over():
     model = ScriptedModel(messages=iter([AIMessage(content=d) for d in bad + ["I can quote the exact refund: shall I check?"] + bad]))
     graph = build_graph(MemorySaver())
     config = {"configurable": {"thread_id": "t-no-escalate", "tools": [handover_to_human], "llm": model, "default_lang": "en"}}
-    base = {"role": "customer", "user_name": "Test", "preferred_lang": "en"}
+    base = {"user_name": "Test"}
     for text in ["what do I get back?", "and if I cancel today?", "how much exactly?"]:
         asyncio.run(graph.ainvoke({"messages": [HumanMessage(content=text)], **base}, config))
     values = asyncio.run(graph.aget_state(config)).values
@@ -526,18 +526,18 @@ def test_escalation_reuses_a_case_the_model_already_logged_this_turn():
     assert calls == [] and out["messages"][0].content == ESCALATED["en"].format(case=41) and out["verification"]["case"] == 41
 
 
-# ---------------------------------------------------------------- decisions #46-#47: topic-scoped prompt and tools; precomputed guard
+# ---------------------------------------------------------------- Topic-scoped prompt and tools; precomputed guard
 def test_the_topic_picks_the_prompt_section_and_the_tool_menu():
     from falcon.services.runtime.personas import COMMON_TOOLS, TOPIC_TOOLS, tools_for_topic
     from falcon.services.runtime.prompts import ALL_SECTIONS, TOPIC_SECTIONS, system_prompt
 
-    full = system_prompt("customer", lang="en", name="Test")
+    full = system_prompt(lang="en", name="Test")
     for section in ALL_SECTIONS:
         assert section.strip() in full  # no topic: the whole prompt, as before the split
-    cancel = system_prompt("customer", lang="ar", name="Fatima", topic="cancel_refund")
+    cancel = system_prompt(lang="ar", name="Fatima", topic="cancel_refund")
     assert "Bereavement and force majeure" in cancel and "New bookings: search_flights" not in cancel
     assert "Current date and time" in cancel and cancel.index("How to behave") < cancel.index("Current date and time")  # dynamic lines last
-    assert "ROLE: customer" in cancel and "REPLY_LANGUAGE: ar" in cancel  # the scripted model still finds its markers
+    assert "REPLY_LANGUAGE: ar" in cancel  # the scripted model still finds its marker
     assert set(TOPIC_SECTIONS) == {"bookings", "cancel_refund", "change", "baggage", "book_new", "disruption", "policy", "exception"} == set(TOPIC_TOOLS)
 
     class T:  # a bound tool is anything with a name
@@ -547,8 +547,9 @@ def test_the_topic_picks_the_prompt_section_and_the_tool_menu():
     names = lambda ts: {t.name for t in ts}  # noqa: E731
     assert names(tools_for_topic("cancel_refund", every)) == {"search_policy", "quote_cancellation", "cancel_booking", "handover_to_human", "list_my_bookings"}
     assert names(tools_for_topic("baggage", every)) == {"search_policy", "add_extra_bag", "handover_to_human", "list_my_bookings"}
+    assert "add_extra_bag" in names(tools_for_topic("change", every)) and "add_extra_bag" in names(tools_for_topic("book_new", every))  # FAILURE_DIARY #80
     assert names(tools_for_topic(None, every)) == names(every) == names(tools_for_topic("general", every))
-    assert COMMON_TOOLS <= names(tools_for_topic("book_new", every)) | {"check_travel_eligibility", "get_request_status", "get_booking"}
+    assert names(tools_for_topic("book_new", every)) | {"check_travel_eligibility", "get_request_status", "get_booking"} >= COMMON_TOOLS
 
 
 def test_the_agent_narrows_only_on_a_classifier_topic(monkeypatch):
@@ -576,13 +577,13 @@ def test_the_guard_node_reuses_a_precomputed_verdict_for_the_same_text():
     graph = build_graph(MemorySaver())
     config = {"configurable": {"thread_id": "t-pre", "tools": [], "llm": model, "default_lang": "en",
                                "guard_precomputed": {"text": "add 10 kg to K3P7QZ", "clean": "add 10 kg to K3P7QZ", "guard": pre}}}
-    asyncio.run(graph.ainvoke({"messages": [HumanMessage(content="add 10 kg to K3P7QZ")], "role": "customer", "user_name": "Test", "preferred_lang": "en"}, config))
+    asyncio.run(graph.ainvoke({"messages": [HumanMessage(content="add 10 kg to K3P7QZ")], "user_name": "Test"}, config))
     values = asyncio.run(graph.aget_state(config)).values
     assert values["guardrail"]["source"] == "llm" and values["guardrail"]["topic"] == "baggage"  # the node did not classify again
 
 
 def test_citation_support_judges_a_cited_parent_against_its_retrieved_children(monkeypatch):
-    # FAILURE_DIARY #67: a reply citing "7.4" when only 7.4.1 was retrieved raised KeyError, and the turn became "model unavailable"
+    # A reply citing "7.4" when only 7.4.1 was retrieved raised KeyError, and the turn became "model unavailable"
     import asyncio as _asyncio
     from falcon.services.runtime import review as rv
     clause = json.dumps({"results": [{"clause_id": "7.4.1", "text_en": "Expectant mothers may travel up to the end of the 36th week."}]})
@@ -599,7 +600,7 @@ def test_citation_support_judges_a_cited_parent_against_its_retrieved_children(m
 
 
 def test_a_bare_yes_to_two_offers_raises_no_card():
-    # FAILURE_DIARY #65: the agent quoted credit (1291, fee 100) and card (1091, fee 300) and asked which; a bare "نعم" raised the
+    # The agent quoted credit (1291, fee 100) and card (1091, fee 300) and asked which; a bare "نعم" raised the
     # card for the last quote, the dearer one. Two different offers on the table: the model must ask, no shortcut may choose.
     from falcon.services.runtime.graph import card_shortcut, confirmation_shortcut, open_quote
     credit = ToolMessage(content=json.dumps({"kind": "cancel", "pnr": "K3P7QZ", "allowed": True, "fee": "100.00", "refund": "1291.00", "refund_method": "credit", "currency": "AED", "quote_id": "Q-C"}), tool_call_id="1", name="quote_cancellation")
@@ -616,3 +617,13 @@ def test_a_bare_yes_to_two_offers_raises_no_card():
     again = ToolMessage(content=json.dumps({"kind": "cancel", "pnr": "K3P7QZ", "allowed": True, "fee": "100.00", "refund": "1291.00", "refund_method": "credit", "currency": "AED", "quote_id": "Q-C2"}), tool_call_id="3", name="quote_cancellation")
     one = [HumanMessage(content="أريد إلغاء حجزي K3P7QZ"), calls, credit, again, AIMessage(content="هل تؤكدين؟"), HumanMessage(content="نعم")]
     assert confirmation_shortcut({"messages": one})["args"]["quote_id"] == "Q-C2"
+
+
+def test_the_citation_check_has_its_own_deadline(monkeypatch):
+    # Review_citation_timeout_s was declared and never read; the check ran on the general 60 s x 3 attempts
+    from falcon.services.runtime import llm, review as rv
+    seen = {}
+    monkeypatch.setattr(rv, "_reviewer_model", None)
+    monkeypatch.setattr(llm, "make_chat_model", lambda *a, **kw: seen.update(kw) or object())
+    rv._reviewer()
+    assert seen["timeout"] == rv.settings.review_citation_timeout_s and seen["max_retries"] == 0

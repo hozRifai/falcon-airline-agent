@@ -16,6 +16,7 @@ web/tsconfig.tsbuildinfo
 # public branch: working notes stay local
 *.md
 !README.md
+!CHANGELOG.md
 .venv-voice/
 .voice.pid
 .voice.log

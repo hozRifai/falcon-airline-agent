@@ -53,7 +53,7 @@ fi
 
 if [ "$BUILD" = 1 ]; then
   step "Building the image if the code changed"
-  $DC build
+  $DC --profile init --profile eval build
 fi
 step "Bringing the database schema up to date (idempotent; data is kept)"
 # --build: `init` is behind a compose profile, so `$DC build` above skips it and `run` would reuse a stale image
@@ -68,14 +68,14 @@ wait_for_runtime
 
 echo
 echo "Ready."
-echo "  App:    http://localhost:8000   $( [ -n "$(access_code)" ] && echo "(access code: $(access_code))" || echo "(no access code: pick a customer)")"
+echo "  App:    http://localhost:8000   (pick a customer in the left sidebar)"
 echo "  Logs:   $DC logs -f runtime"
 echo "  Stop:   $DC down                (data is kept)"
 if [ "$TRACE" = 1 ]; then echo "  Traces: http://localhost:6006   (Phoenix; every turn is a trace named chat.turn)"; fi
 if [ "$VOICE" = 1 ]; then
   # outside Docker (decision #49); a bot from an earlier up.sh --voice is stopped first so the new code runs
   "$ROOT/scripts/voice.sh" --stop >/dev/null
-  # appended, not overwritten: a restart must not erase the previous calls (scripts/voice_stt_compare.py and the latency summary read it)
+  # appended, not overwritten: a restart must not erase the previous calls' log lines
   echo "===== voice bot started $(date -Iseconds) =====" >> "$ROOT/.voice.log"
   nohup "$ROOT/scripts/voice.sh" >> "$ROOT/.voice.log" 2>&1 &
   echo $! > "$ROOT/.voice.pid"

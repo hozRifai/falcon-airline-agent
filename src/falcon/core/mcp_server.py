@@ -1,8 +1,8 @@
-"""Shared plumbing for the three MCP servers: auth, user context, audit log, server factory.
+"""Shared plumbing for the three MCP servers: bearer-token verification, the signed user context, the audit log, the server factory.
 
-Each server is an OAuth resource server (the MCP spec's own authorization model). The
-bearer token is verified by `FalconTokenVerifier`; the per-request user assertion is read
-by `UserContextMiddleware` and exposed to tools through `current_user()`.
+Each server is a stateless Streamable HTTP resource server. The bearer token is checked by `FalconTokenVerifier` (audience =
+the server's name, roles inside); the per-request user assertion is read by `UserContextMiddleware` and reached by tools through
+`current_user()`. Every tool is wrapped by `audited()`: one audit row and one trace span per call.
 """
 
 from __future__ import annotations
@@ -12,8 +12,10 @@ import functools
 import json
 import logging
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
+import jwt
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -22,8 +24,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .auth import USER_HEADER, UserContext, build_verifier, verify_user_assertion
-from .config import settings
+from .auth import SERVICE_ISSUER, USER_HEADER, UserContext, verify_service_token, verify_user_assertion
 from .db import Database
 from .telemetry import current_ids, setup_tracing, tracer
 
@@ -34,17 +35,17 @@ _user_ctx: contextvars.ContextVar[UserContext | None] = contextvars.ContextVar("
 
 class FalconTokenVerifier(TokenVerifier):
     def __init__(self, audience: str):
-        self.inner = build_verifier(audience)
+        self.audience = audience
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        verified = self.inner.verify(token)
+        verified = verify_service_token(token, self.audience)
         if verified is None:
             return None
-        return AccessToken(token=token, client_id=verified.subject, scopes=verified.roles, expires_at=verified.expires_at, claims=verified.claims)
+        return AccessToken(token=token, client_id=verified.subject, scopes=verified.roles, expires_at=verified.expires_at)
 
 
 class UserContextMiddleware:
-    """Reads the signed user assertion (if any) and stores it for the duration of the request."""
+    """Reads the signed user assertion (if any) and keeps it for the duration of the request."""
 
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -58,7 +59,7 @@ class UserContextMiddleware:
             if name.decode().lower() == USER_HEADER:
                 try:
                     user = verify_user_assertion(value.decode())
-                except Exception:  # invalid assertion => no user; tools that need one will refuse
+                except (jwt.PyJWTError, KeyError, ValueError):  # an invalid assertion means no user: tools that need one refuse
                     user = None
                 break
         token = _user_ctx.set(user)
@@ -69,14 +70,11 @@ class UserContextMiddleware:
 
 
 def current_user() -> UserContext:
+    """The signed-in customer this request is made for. Tools never take a customer id: this is the only source."""
     user = _user_ctx.get()
     if user is None:
         raise ToolError("No signed-in user context on this request.")
     return user
-
-
-def optional_user() -> UserContext | None:
-    return _user_ctx.get()
 
 
 def require_role(role: str) -> None:
@@ -86,46 +84,32 @@ def require_role(role: str) -> None:
         raise ToolError(f"Forbidden: this tool requires the '{role}' role, which the calling service does not have.")
 
 
-def require_user_role(*roles: str) -> UserContext:
-    """User-level guardrail: the signed-in person must hold one of these roles (today only "customer" exists)."""
-    user = current_user()
-    if user.role not in roles:
-        raise ToolError(f"Forbidden: this action is only available to {', '.join(roles)} users.")
-    return user
-
-
 def redact(args: dict[str, Any]) -> dict[str, Any]:
-    out = {}
-    for k, v in args.items():
-        if any(s in k.lower() for s in ("email", "phone", "passport", "card")):
-            out[k] = "***"
-        else:
-            out[k] = v
-    return out
+    """Tool arguments as the audit log and the UI may show them."""
+    return {k: ("***" if any(s in k.lower() for s in ("email", "phone", "passport", "card")) else v) for k, v in args.items()}
 
 
 class Audit:
-    """Append-only audit log. Every tool call on every server lands here."""
+    """Append-only audit log: every tool call on every server lands in agent.audit_log, with the agent's trace id."""
 
     def __init__(self, service: str, db: Database):
         self.service = service
         self.db = db
 
     async def record(self, tool: str, args: dict[str, Any], *, ok: bool, latency_ms: int, summary: str) -> None:
-        user = optional_user()
-        trace_id, _ = current_ids()  # the agent's trace, carried in by traceparent: audit row <-> trace without any backend
+        user = _user_ctx.get()
+        trace_id, _ = current_ids()
         try:
             await self.db.execute(
                 "INSERT INTO agent.audit_log(service, session_id, actor, tool, args, ok, latency_ms, summary, trace_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (self.service, user.session_id if user else None, user.user_id if user else None, tool, json.dumps(redact(args), default=str), ok, latency_ms, summary[:500], trace_id),
             )
-        except Exception as exc:  # the audit log must never break the business call
+        except Exception as exc:  # noqa: BLE001 - the audit log must never break the business call
             log.warning("audit write failed: %s", exc)
 
 
 def audited(audit: Audit, name: str):
-    """Decorator: times the tool, records success or failure, re-raises errors as ToolError. Each call is a span
-    (`tool.<name>`) inside the agent's trace, carried in by the traceparent header the runtime sends."""
+    """Decorator: times the tool, records success or failure, re-raises errors as ToolError, one span per call."""
 
     def wrap(fn: Callable):
         @functools.wraps(fn)
@@ -134,19 +118,17 @@ def audited(audit: Audit, name: str):
             with tracer("falcon.mcp").start_as_current_span(f"tool.{name}", attributes={"falcon.tool": name, "falcon.service": audit.service}) as span:
                 try:
                     result = await fn(*args, **kwargs)
-                except ToolError as exc:
-                    span.set_attribute("falcon.ok", False)
-                    span.set_attribute("falcon.error", str(exc)[:300])
-                    await audit.record(name, kwargs, ok=False, latency_ms=int((time.perf_counter() - started) * 1000), summary=str(exc))
-                    raise
                 except Exception as exc:
+                    error = str(exc) if isinstance(exc, ToolError) else f"error: {exc}"
                     span.set_attribute("falcon.ok", False)
-                    span.set_attribute("falcon.error", f"error: {exc}"[:300])
-                    await audit.record(name, kwargs, ok=False, latency_ms=int((time.perf_counter() - started) * 1000), summary=f"error: {exc}")
+                    span.set_attribute("falcon.error", error[:300])
+                    await audit.record(name, kwargs, ok=False, latency_ms=int((time.perf_counter() - started) * 1000), summary=error)
+                    if isinstance(exc, ToolError):
+                        raise
                     raise ToolError(f"{name} failed: {exc}") from exc
-                summary = result if isinstance(result, str) else json.dumps(result, default=str)
                 span.set_attribute("falcon.ok", True)
-                await audit.record(name, kwargs, ok=True, latency_ms=int((time.perf_counter() - started) * 1000), summary=summary)
+                await audit.record(name, kwargs, ok=True, latency_ms=int((time.perf_counter() - started) * 1000),
+                                   summary=result if isinstance(result, str) else json.dumps(result, default=str))
                 return result
 
         return inner
@@ -154,32 +136,23 @@ def audited(audit: Audit, name: str):
     return wrap
 
 
-def build_server(name: str, *, audience: str, public_url: str, host: str = "0.0.0.0", port: int, lifespan=None, instructions: str = "") -> FastMCP:
-    """FastMCP configured as a stateless Streamable HTTP resource server with bearer auth."""
-    auth = AuthSettings(
-        issuer_url="https://login.microsoftonline.com/" + settings.entra_tenant_id + "/v2.0" if settings.auth_mode == "entra" else "http://falcon-dev-issuer.local",
-        resource_server_url=public_url,
-        required_scopes=[],
-        validate_token_resource=False,  # audience is checked inside the verifier
-    )
-    transport = TransportSecuritySettings(enable_dns_rebinding_protection=False)  # containers call us by service name
-    server = FastMCP(
-        name,
+def build_server(name: str, *, public_url: str, port: int, instructions: str = "") -> FastMCP:
+    """FastMCP as a stateless Streamable HTTP resource server with bearer auth; the audience is the server's short name."""
+    return FastMCP(
+        f"falcon-{name}",
         instructions=instructions,
-        token_verifier=FalconTokenVerifier(audience),
-        auth=auth,
-        host=host,
+        token_verifier=FalconTokenVerifier(name),
+        auth=AuthSettings(issuer_url=f"http://{SERVICE_ISSUER}.local", resource_server_url=public_url, required_scopes=[], validate_token_resource=False),
+        host="0.0.0.0",
         port=port,
-        stateless_http=True,   # one request = one unit of work: no sticky sessions, scales out behind any load balancer
+        stateless_http=True,  # one request = one unit of work: no sticky sessions
         json_response=True,
-        transport_security=transport,
-        lifespan=lifespan,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),  # containers call us by service name
     )
-    return server
 
 
 def wrap_app(server: FastMCP):
     app = server.streamable_http_app()
     app.add_middleware(UserContextMiddleware)
-    setup_tracing(server.name, app)  # server spans continue the agent's trace (decision #27); a no-op without an endpoint
+    setup_tracing(server.name, app)  # server spans continue the agent's trace; a no-op without an endpoint
     return app

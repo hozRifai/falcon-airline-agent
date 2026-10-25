@@ -1,4 +1,4 @@
-"""Disclosed facts end to end, without services or a key (decision #34, FAILURE_DIARY #48).
+"""Disclosed facts end to end, without services or a key.
 
 The guard notices "38th month" / "30 weeks" / "3 days" / "8 years alone", the scripted model calls check_travel_eligibility (a stub here,
 backed by the same rules function the policy server uses, with the clause text the server would attach), the reply states the rule
@@ -50,7 +50,7 @@ TOOL = StructuredTool.from_function(check_travel_eligibility, name="check_travel
 def _talk(text: str, lang: str = "en", name: str = "Layla Nasser") -> dict:
     graph = build_graph(MemorySaver())
     config = {"configurable": {"thread_id": "t1", "tools": [TOOL], "llm": RuleBasedFakeModel(), "default_lang": lang}}
-    initial = {"messages": [HumanMessage(content=text)], "role": "customer", "user_name": name, "preferred_lang": lang}
+    initial = {"messages": [HumanMessage(content=text)], "user_name": name, "preferred_lang": lang}
     asyncio.run(graph.ainvoke(initial, config))
     return asyncio.run(graph.aget_state(config)).values
 

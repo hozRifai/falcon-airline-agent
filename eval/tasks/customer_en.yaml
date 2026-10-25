@@ -38,16 +38,15 @@
   goal: |
     You are Khalid. Your Riyadh flight (booking M8T2LD) is tomorrow at 02:30 and you had a medical emergency; you want to cancel.
     If the assistant says the deadline has passed but an exception case can be logged for the customer-care team, ask for it and confirm. Note the case number it gives you.
-    When the assistant asks for your doctor's note or a document, say exactly "I have attached my doctor's note: doctor_note.pdf" (the chat uploads it for you).
-    Do not accept anything else. Stop when the request is sent.
-  facts: {booking: M8T2LD, route: Dubai to Riyadh, reason: medical emergency with a doctor's note (attached when asked)}
-  script: ["I need to cancel my Riyadh flight M8T2LD, it's a medical emergency", "I have attached my doctor's note: doctor_note.pdf, please log the exception case", "yes"]
-  attachments: [{before_turn: 2, file: doctor_note.pdf}]
+    If the assistant asks about a document, say you have your doctor's note and will send it. Do not accept anything else. Stop when
+    the request is sent.
+  facts: {booking: M8T2LD, route: Dubai to Riyadh, reason: medical emergency with a doctor's note}
+  script: ["I need to cancel my Riyadh flight M8T2LD, it's a medical emergency", "I have a doctor's note, please log the exception case", "yes"]
   write_actions: [{tool: request_exception, args: {pnr: M8T2LD}}]
   forbidden_actions: [cancel_booking]
-  expected_tools: [quote_cancellation, list_my_attachments, request_exception]
-  must_mention: ["24 hours|deadline|exception|case", "attach|document|note"]
-  final_state: [{sql: "select status from reservations.bookings where pnr='M8T2LD'", equals: confirmed}, {sql: "select count(*) from reservations.approval_requests where pnr='M8T2LD' and status='pending' and proposed->'evidence' is not null and jsonb_array_length(proposed->'evidence') = 1", equals: 1}]
+  expected_tools: [quote_cancellation, request_exception]
+  must_mention: ["24 hours|deadline|exception|case", "email|document|note"]
+  final_state: [{sql: "select status from reservations.bookings where pnr='M8T2LD'", equals: confirmed}, {sql: "select count(*) from reservations.approval_requests where pnr='M8T2LD' and status='pending' and proposed->>'document_requested' = 'true'", equals: 1}, {sql: "select count(*) from reservations.email_outbox where pnr='M8T2LD' and subject like 'Case #%'", equals: 1}]
 
 - id: airline_cancelled_full_refund_en
   lang: en
@@ -98,9 +97,9 @@
   persona: u-salma
   tags: [change]
   goal: |
-    You are Salma. You want to move your Bahrain flight on 26 October (booking S3L5KQ) to the evening flight on 27 October.
+    You are Salma. You want to move your Bahrain flight on 29 October (booking S3L5KQ) to the evening flight on 30 October.
     Accept a change fee up to 250 AED plus any fare difference. Confirm when asked. Stop once the change is confirmed.
-  facts: {booking: S3L5KQ, route: Dubai to Bahrain, current flight: FA831 on 2026-10-26 08:10, wanted: evening flight FA833 on 2026-10-27 20:10}
+  facts: {booking: S3L5KQ, route: Dubai to Bahrain, current flight: FA831 on 2026-10-29 08:10, wanted: evening flight FA833 on 2026-10-30 20:10}
   write_actions: [{tool: change_booking, args: {pnr: S3L5KQ}}]
   expected_tools: [search_flights|get_booking, quote_change, change_booking]
   must_mention: ["200"]
@@ -111,15 +110,15 @@
   persona: u-ahmed
   tags: [search]
   goal: |
-    You are Ahmed. You want the cheapest flight from Dubai to Cairo around 31 October (any day from 29 October to 2 November), but not on a Monday, for one person.
+    You are Ahmed. You want the cheapest flight from Dubai to Cairo around 3 November (any day from 1 November to 5 November), but not on a Thursday, for one person.
     Ask for options. If the assistant offers a cheaper flight from Dubai's other airport (Al Maktoum, DWC), ask how much cheaper it is. Do not book anything. Stop after you get the options and the saving.
-  facts: {origin: Dubai, destination: Cairo, dates: 29 October to 2 November 2026, avoid: Monday}
+  facts: {origin: Dubai, destination: Cairo, dates: 1 November to 5 November 2026, avoid: Thursday}
   forbidden_actions: [cancel_booking, change_booking]
   expected_tools: [search_flights]
   must_mention: ["Al Maktoum|DWC|Dubai South"]
-  # the only Monday in the window is 2 Nov; "excluding Monday" or repeating the range ("29 Oct to 2 Nov") is fine,
-  # presenting a flight on 2 Nov is not
-  must_not_mention: ['Monday,? \**2 Nov|\bon \**(Monday,? )?2 Nov|\**2 Nov(ember)?\**:|2026-11-02']
+  # the only Thursday in the window is 5 Nov (the cheap day of the weekly price pattern); "excluding Thursday" or repeating the
+  # range ("1 to 5 Nov") is fine, presenting a flight on 5 Nov is not
+  must_not_mention: ['Thursday,? \**5 Nov|\bon \**(Thursday,? )?5 Nov|\**5 Nov(ember)?\**:|2026-11-05']
 
 - id: policy_infant_baggage_en
   lang: en
@@ -148,9 +147,9 @@
   script: ["I want to book a flight next week, find me the cheapest one from Dubai to Beirut"]
   forbidden_actions: [cancel_booking, change_booking, request_exception]
   expected_tools: [search_flights]
-  # the cheapest flight of the week is FA951 on Monday 26 October (900 AED Special); the 27th alone would give 965 (FAILURE_DIARY #39)
-  must_mention: ["FA951", "\\b900\\b", "26 Oct|2026-10-26|Monday"]
-  # 965 (the 27th) may appear among the alternatives after the cheapest; it must not be presented as the cheapest
+  # the cheapest flight of the week is FA951 on Thursday 29 October (900 AED Special); the 27th alone would give 965 (FAILURE_DIARY #39)
+  must_mention: ["FA951", "\\b900\\b", "29 Oct|2026-10-29|Thursday"]
+  # 965 (the 30th) may appear among the alternatives after the cheapest; it must not be presented as the cheapest
   must_not_mention: ['(?<![Nn]ext )(?:the )?(?:cheapest|lowest|best price)(?: option| flight| fare)?(?: is|:)[^.\n]{0,60}\b965\b']  # "next cheapest ... 965" is true (19 Oct re-run)
 
 # ---- the whole arc in one conversation: eligibility, confirmation, cancellation, then the next trip
@@ -184,7 +183,7 @@
   expected_tools: [search_flights, quote_booking, create_booking]
   must_mention: ["FA951", "\\b900\\b"]
   final_state:
-    - {sql: "select count(*) from reservations.bookings b join reservations.booking_segments s using (pnr) where b.customer_id='C-1008' and b.status='confirmed' and s.flight_instance_id='FA951-2026-10-26' and b.fare_family='SPECIAL' and b.total_paid=900", equals: 1}
+    - {sql: "select count(*) from reservations.bookings b join reservations.booking_segments s using (pnr) where b.customer_id='C-1008' and b.status='confirmed' and s.flight_instance_id='FA951-2026-10-29' and b.fare_family='SPECIAL' and b.total_paid=900", equals: 1}
 
 # ---- the ticket by email (decision #32): alone, and together with a booking in one message
 - id: email_itinerary_existing_booking_en
@@ -265,16 +264,16 @@
   grounding: true
   goal: |
     You are Omar. Your father has just passed away and you no longer want to take your London trip (booking B4N6WX). Ask whether you can get your money back.
-    When the assistant asks for the death certificate or a document, say exactly "I have attached the death certificate: doctor_note.pdf, please log the case" (the chat uploads it for you). Confirm when asked. Stop when you have the case number.
-  facts: {booking: B4N6WX, route: Dubai to London, paid: 2425 AED, reason: father passed away (certificate attached when asked)}
-  script: ["My father passed away and I no longer want to travel. Can I get my money back for B4N6WX?", "I have attached the death certificate: doctor_note.pdf, please log the case", "yes"]
-  attachments: [{before_turn: 2, file: doctor_note.pdf}]
+    If the assistant asks about a document, say you have the death certificate and ask it to log the case. Confirm when asked. Stop when
+    you have the case number.
+  facts: {booking: B4N6WX, route: Dubai to London, paid: 2425 AED, reason: father passed away (has the death certificate)}
+  script: ["My father passed away and I no longer want to travel. Can I get my money back for B4N6WX?", "I have the death certificate, please log the case", "yes"]
   write_actions: [{tool: request_exception, args: {pnr: B4N6WX, kind: bereavement}}]
   forbidden_actions: [cancel_booking, change_booking]
-  expected_tools: [search_policy|get_clause, list_my_attachments|request_exception, request_exception]
+  expected_tools: [search_policy|get_clause, request_exception]
   must_mention: ["3\\.3\\.2", "2425"]
   must_not_mention: ["150 AED fee|fee of 150|\\b2275\\b"]
-  final_state: [{sql: "select count(*) from reservations.approval_requests where pnr='B4N6WX' and status='pending' and proposed->>'kind'='bereavement' and jsonb_array_length(proposed->'evidence') = 1", equals: 1}]
+  final_state: [{sql: "select count(*) from reservations.approval_requests where pnr='B4N6WX' and status='pending' and proposed->>'kind'='bereavement' and proposed->>'document_requested' = 'true'", equals: 1}, {sql: "select count(*) from reservations.email_outbox where pnr='B4N6WX' and subject like 'Case #%death certificate'", equals: 1}]
 
 - id: student_discount_not_covered_en
   lang: en

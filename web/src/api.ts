@@ -1,8 +1,8 @@
 // API client. The token is a signed session token from the demo sign-in; it goes in the Authorization header.
 // Chat answers stream as Server-Sent Events: token | tool | review | confirm | done.
 
-export type User = { user_id: string; display_name: string; role: 'customer'; customer_id: string | null; lang: string; session_id: string }
-export type Persona = { user_id: string; display_name: string; display_name_ar: string; role: string; customer_id: string | null; lang: string; persona_note_en: string; persona_note_ar: string; sort_order: number }
+export type User = { user_id: string; display_name: string; customer_id: string | null; lang: string; session_id: string }
+export type Persona = { user_id: string; display_name: string; display_name_ar: string; customer_id: string | null; lang: string; persona_note_en: string; persona_note_ar: string }
 export type ToolEntry = { tool: string; args: Record<string, unknown>; ok: boolean; latency_ms: number; summary: string; declined?: boolean }
 export type Flight = { seq: number; flight_number: string; origin: string; destination: string; departure: string }
 export type Quote = Record<string, any> & { flights?: Flight[] }
@@ -31,24 +31,10 @@ async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  personas: () => req<{ personas: Persona[]; frozen_now: string; model: string; trace_ui_url?: string | null; requires_code?: boolean }>('/api/personas'),
-  switch: (user_id: string, reset = true) => req<{ token: string; user: User; persona: Persona; reset: boolean }>('/api/demo/switch', { method: 'POST', body: JSON.stringify({ user_id, reset }) }),
-  upload: async (file: File) => {
-    // a document attached in the chat (decision #33): multipart, the session token, no JSON content type
-    const fd = new FormData()
-    fd.append('file', file)
-    const headers: Record<string, string> = {}
-    const token = getToken()
-    if (token) headers.Authorization = `Bearer ${token}`
-    const r = await fetch('/api/attachments', { method: 'POST', body: fd, headers })
-    if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.detail || `upload failed (${r.status})`)
-    return r.json() as Promise<{ id: number; filename: string; size_bytes: number }>
-  },
-  login: (user_id: string, access_code: string) => req<{ token: string; user: User }>('/api/auth/demo-login', { method: 'POST', body: JSON.stringify({ user_id, access_code }) }),
-  me: () => req<User>('/api/me'),
+  personas: () => req<{ personas: Persona[]; frozen_now: string; model: string; trace_ui_url?: string | null }>('/api/personas'),
+  switch: (user_id: string) => req<{ token: string; user: User; persona: Persona }>('/api/demo/switch', { method: 'POST', body: JSON.stringify({ user_id, reset: true }) }),
   bookings: () => req<{ bookings: Record<string, any>[] }>('/api/bookings'),
   search: (q: Record<string, string>) => req<Record<string, any>>('/api/search?' + new URLSearchParams(q).toString()),
-  fareRules: () => req<Record<string, any>>('/api/fare-rules'),
   history: (thread: string) => req<{ messages: { role: string; text: string }[]; pending: Pending | null; lang: string }>(`/api/chat/history?thread=${thread}`),
   feedback: (body: { rating: 'up' | 'down'; thread: string; turn_id?: number | null; message?: string }) => req<{ ok: boolean; feedback_id: number }>('/api/feedback', { method: 'POST', body: JSON.stringify(body) }),
 }

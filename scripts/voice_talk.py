@@ -21,9 +21,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import httpx  # noqa: E402
+import httpx
 
-from falcon.services.voice.call import CallSession, RuntimeClient  # noqa: E402
+from falcon.services.voice.call import CallSession, RuntimeClient
 
 
 async def main() -> None:

@@ -1,7 +1,7 @@
 """Generation evaluation: are the agent's policy answers faithful to the clauses it retrieved, relevant, and complete?
 (docs/EVALUATION.md §4)
 
-Retrieval (§1) measures whether the right clause comes back. The runtime reviewer (decision #26; FAILURE_DIARY #43, #47, #49) blocks
+Retrieval (§1) measures whether the right clause comes back. The runtime reviewer blocks
 unretrieved clause ids, figures no tool returned, laws named from memory and policy claims with no citation. Neither says whether the
 reply *uses* the retrieved clauses well: on 18 Oct the agent cited three unrelated clauses for a medical-emergency question and once
 invented stroller rules, and both passed every deterministic check. This runner asks the running agent every question of the retrieval
@@ -15,7 +15,7 @@ scores each reply twice:
   (grade-2) clause was retrieved in the turn and whether one was cited.
 - a judge model with a fixed rubric (RUBRIC below): faithfulness, relevance and completeness from 1 to 5, and whether the reply says the
   document does not cover the question. The judge sees the question, the retrieved clause texts and the reply, nothing else, and is
-  told to grade against the clause texts alone, never from what it knows. It is a Qwen model (decision #35): a different family from the
+  told to grade against the clause texts alone, never from what it knows. It is a Qwen model: a different family from the
   DeepSeek agent, so the agent is never grading itself; temperature 0, JSON output.
 
 A judge is a probabilistic grader, so its numbers are quoted only once it agrees with people: eval/generation/labels.yaml holds replies
@@ -28,7 +28,6 @@ Run (needs the stack; one DeepSeek turn per question and one Qwen call per reply
     ... --resume eval/results/generation-<ts>      # finish an interrupted run: ask only the questions it has no answer for
     ... --rejudge eval/results/generation-<ts>     # grade a run's replies again without asking the agent (a cent)
     ... --validate                                 # grade the hand-labelled replies only and print the agreement
-    ... --draft-labels eval/results/generation-<ts> --ids a_en,b_ar   # label stubs + a reading sheet from a run, into that run's folder
 Writes eval/results/generation-<timestamp>/{report.md, answers.jsonl}; answers.jsonl carries the reply, the retrieved clause texts, the
 tool calls, the reviewer's outcome and both scores, so a run can be re-read and re-graded without spending an agent turn. Each answer
 is written as it lands, so a stack restart in the middle (the laptop is shared) loses nothing: `--resume` the folder.
@@ -50,6 +49,7 @@ import yaml
 from falcon.core.config import REPO_ROOT, settings
 from falcon.services.runtime.review import NOT_COVERED_RE, POLICY_TOOLS, cited_clause_ids, policy_problems
 
+from .metrics import pct, percentile
 from .retrieval import load_gold
 
 EXTRA = REPO_ROOT / "eval" / "generation" / "questions.yaml"
@@ -323,7 +323,7 @@ class Judge:
         try:
             try:
                 resp = await self._get_client().chat.completions.create(response_format={"type": "json_object"}, **kwargs)
-            except Exception as exc:  # noqa: BLE001 - some providers reject response_format; the parser copes with prose around the JSON
+            except Exception as exc:
                 if "response_format" not in str(exc).lower() and "json" not in str(exc).lower():
                     raise
                 resp = await self._get_client().chat.completions.create(**kwargs)
@@ -427,17 +427,6 @@ def _fmt(v: float | None, digits: int = 2) -> str:
     return "n/a" if v is None else f"{v:.{digits}f}"
 
 
-def _pct(n: int, d: int) -> str:
-    return f"{100 * n / d:.0f}% ({n}/{d})" if d else "n/a"
-
-
-def _percentile(values: list[int], p: float) -> int:
-    if not values:
-        return 0
-    s = sorted(values)
-    return s[min(len(s) - 1, int(round((len(s) - 1) * p)))]
-
-
 def agreement(pairs: list[tuple[int, int]]) -> dict:
     """Judge-vs-label agreement over (judge, label) pairs: exact, within one point, mean absolute difference, mean bias (judge − label)."""
     n = len(pairs)
@@ -478,9 +467,9 @@ def report(rows: list[dict], judge: Judge, started: float, reset: str, validatio
             continue
         lab = [r for r in sub if r["deterministic"].get("answering_retrieved") is not None]
         lines.append(f"| {lang} | {len(sub)} | " + " | ".join(f"**{_fmt(_mean([r['judge'][d] for r in sub]))}**" for d in DIMENSIONS)
-                     + f" | {_pct(sum(r['deterministic']['cites_clause'] for r in sub), len(sub))}"
-                     + f" | {_pct(sum(r['deterministic']['answering_retrieved'] for r in lab), len(lab))}"
-                     + f" | {_pct(sum(r['deterministic']['answering_cited'] for r in lab), len(lab))}"
+                     + f" | {pct(sum(r['deterministic']['cites_clause'] for r in sub), len(sub))}"
+                     + f" | {pct(sum(r['deterministic']['answering_retrieved'] for r in lab), len(lab))}"
+                     + f" | {pct(sum(r['deterministic']['answering_cited'] for r in lab), len(lab))}"
                      + f" | {sum(r['reviewer']['sent_back'] for r in sub)} |")
     dist = {d: {s: sum(1 for r in answerable if r["judge"][d] == s) for s in range(1, 6)} for d in DIMENSIONS}
     lines += ["", "Score distribution (answerable, count of answers at 1 / 2 / 3 / 4 / 5): "
@@ -492,13 +481,13 @@ def report(rows: list[dict], judge: Judge, started: float, reset: str, validatio
         lines.append(f"| `{r['id']}` | {'yes' if honest(r) else 'no'} | {'yes' if r['deterministic']['not_covered_pattern'] else 'no'} | "
                      f"{', '.join(r['deterministic']['cited']) or '-'} | {r['judge']['faithfulness']} | {r['judge']['reason'][:220]} |")
     if unanswerable:
-        lines += ["", f"Answered honestly: **{_pct(sum(bool(honest(r)) for r in unanswerable), len(unanswerable))}** by the judge; "
-                      f"{_pct(sum(r['deterministic']['not_covered_pattern'] for r in unanswerable), len(unanswerable))} by the reviewer's own 'not covered' pattern."]
+        lines += ["", f"Answered honestly: **{pct(sum(bool(honest(r)) for r in unanswerable), len(unanswerable))}** by the judge; "
+                      f"{pct(sum(r['deterministic']['not_covered_pattern'] for r in unanswerable), len(unanswerable))} by the reviewer's own 'not covered' pattern."]
 
     det = [r["deterministic"] for r in ok]
     lines += ["", "## Deterministic checks on the final replies (the runtime reviewer's own, re-run here)", "",
-              f"- policy tool called in the turn: {_pct(sum(d['policy_tool_called'] for d in det), len(det))}",
-              f"- cites at least one clause: {_pct(sum(d['cites_clause'] for d in det), len(det))}",
+              f"- policy tool called in the turn: {pct(sum(d['policy_tool_called'] for d in det), len(det))}",
+              f"- cites at least one clause: {pct(sum(d['cites_clause'] for d in det), len(det))}",
               f"- cited clause not retrieved in the turn: {sum(d['unretrieved_clause'] for d in det)}",
               f"- figure with a unit in no tool result: {sum(d['unsupported_quantities'] for d in det)}",
               f"- law or regulation named from memory: {sum(d['unsupported_regulation'] for d in det)}",
@@ -510,7 +499,7 @@ def report(rows: list[dict], judge: Judge, started: float, reset: str, validatio
     lab = [r for r in ok if r["deterministic"].get("answering_retrieved") is not None]
     if lab:
         missed = [r["id"] for r in lab if not r["deterministic"]["answering_retrieved"]]
-        lines += [f"- answering clause (gold grade 2) retrieved in the turn: {_pct(len(lab) - len(missed), len(lab))}"
+        lines += [f"- answering clause (gold grade 2) retrieved in the turn: {pct(len(lab) - len(missed), len(lab))}"
                   + (f"; missed: {', '.join(f'`{m}`' for m in missed)}" if missed else "")]
 
     worst = sorted(judged, key=lambda r: (sum(r["judge"][d] for d in DIMENSIONS), r["judge"]["faithfulness"]))[:5]
@@ -526,7 +515,7 @@ def report(rows: list[dict], judge: Judge, started: float, reset: str, validatio
     agent_cost = agent_in / 1e6 * settings.llm_price_in_per_m + agent_out / 1e6 * settings.llm_price_out_per_m
     lat = [r["latency_ms"] for r in ok]
     lines += ["", "## Cost and latency", "",
-              f"- agent: {agent_in:,} input + {agent_out:,} output tokens, about USD {agent_cost:.3f}; turn latency p50 {_percentile(lat, 0.5)} ms, p95 {_percentile(lat, 0.95)} ms",
+              f"- agent: {agent_in:,} input + {agent_out:,} output tokens, about USD {agent_cost:.3f}; turn latency p50 {percentile(lat, 0.5):.0f} ms, p95 {percentile(lat, 0.95):.0f} ms",
               f"- judge: {judge.input_tokens:,} input + {judge.output_tokens:,} output tokens, about USD {judge.cost_usd:.4f} "
               f"(USD {settings.judge_price_in_per_m}/{settings.judge_price_out_per_m} per million)"]
     if validation:
@@ -610,54 +599,10 @@ async def validate(judge: Judge) -> str | None:
     return agreement_report(entries, graded)
 
 
-# ---------------------------------------------------------------- label stubs from a run
-class _Dumper(yaml.SafeDumper):
-    pass
-
-
-def _str_presenter(dumper, data):
-    if "\n" in data:
-        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
-
-
-_Dumper.add_representer(str, _str_presenter)
-
-
-def draft_labels(run_dir: Path, ids: list[str]) -> tuple[Path, Path]:
-    """Label stubs (labels_draft.yaml) and a reading sheet with the clause texts (labels_context.md) for chosen answers of a run,
-    written into the run's folder (the only path the eval container shares with the laptop); copy them to eval/generation/ by hand."""
-    rows = {r["id"]: r for r in read_run(run_dir)}
-    stubs, sheet = [], ["# Reading sheet for the generation labels", "",
-                        "For each reply: the question, the clauses the agent retrieved (in the question's language) and the reply. Label in "
-                        "labels.yaml with the rubric of `src/falcon/eval/generation.py` (RUBRIC): faithfulness, relevance, completeness 1-5, "
-                        "said_not_covered true/false. Judge the reply against these clause texts only.", ""]
-    for i in ids:
-        r = rows[i]
-        empty = {d: None for d in DIMENSIONS} | {"said_not_covered": None, "note": ""}
-        stubs.append({"id": i, "lang": r["lang"], "answerable": r["answerable"], "question": r["question"], "retrieved": r["deterministic"].get("retrieved", []),
-                      "reply": r["reply"].strip(), "hozayfa": dict(empty), "claude": dict(empty)})
-        sheet += [f"## {i}", "", f"**Question ({r['lang']}):** {r['question']}", "", "**Retrieved clauses:**", ""]
-        for c in r["clauses"]:
-            sheet.append(f"- [{c['clause_id']}] {c.get('article') or ''}: {c.get('text_' + r['lang']) or c.get('text_en') or c.get('text_ar') or ''}")
-        if not r["clauses"]:
-            sheet.append("- (none retrieved)")
-        sheet += ["", "**Reply:**", "", *("> " + line for line in r["reply"].strip().splitlines()), ""]
-    draft = run_dir / "labels_draft.yaml"
-    context = run_dir / "labels_context.md"
-    draft.write_text(yaml.dump(stubs, Dumper=_Dumper, allow_unicode=True, sort_keys=False, width=130), encoding="utf-8")
-    context.write_text("\n".join(sheet), encoding="utf-8")
-    return draft, context
-
-
 # ---------------------------------------------------------------- main
 async def main_async(args) -> None:
     judge = Judge(args.judge)
     started = time.time()
-    if args.draft_labels:
-        draft, context = draft_labels(Path(args.draft_labels), [i.strip() for i in (args.ids or "").split(",") if i.strip()])
-        print(f"written {draft} and {context}")
-        return
     if args.validate:
         text = await validate(judge)
         if text is None:
@@ -707,8 +652,6 @@ def main() -> None:
     ap.add_argument("--rejudge", default=None, help="a results folder: grade its answers again without asking the agent")
     ap.add_argument("--validate", action="store_true", help="grade the hand-labelled replies only and print the agreement")
     ap.add_argument("--no-validate", action="store_true", help="skip the label validation after a run")
-    ap.add_argument("--draft-labels", default=None, help="a results folder: write label stubs and a reading sheet for --ids into it")
-    ap.add_argument("--ids", default=None, help="comma-separated answer ids for --draft-labels")
     asyncio.run(main_async(ap.parse_args()))
 
 

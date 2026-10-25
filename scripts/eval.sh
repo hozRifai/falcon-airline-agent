@@ -4,7 +4,6 @@
 #   scripts/eval.sh --fake --k 1                      # harness self-test, scripted model, no cost
 #   scripts/eval.sh --k 1 --filter cancel_saver       # first paid smoke test: two short conversations (cents)
 #   scripts/eval.sh --k 1                             # all tasks once (cents on DeepSeek)
-#   scripts/eval.sh --k 4                             # the real pass^4 run (well under 1 USD)
 #   scripts/eval.sh --k 1 --lang ar                   # Arabic tasks only
 #
 # Reports land in eval/results/<timestamp>/report.md (+ runs.jsonl with every transcript).

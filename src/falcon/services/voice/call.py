@@ -5,7 +5,7 @@ session token, so the guard, the tools, the reviewer, the gate and the escalatio
 spoken:
 
 1. only the reviewed reply, the "done" event's message; the token stream is never spoken (speech cannot be taken back);
-2. progress is timed, not triggered by the agent (decision #52): when the reply has not come PROGRESS_AFTER seconds after the turn
+2. progress is timed, not triggered by the agent: when the reply has not come PROGRESS_AFTER seconds after the turn
    was sent, one fixed phrase in the call's language; if it is still not there STILL_AFTER seconds later, one second fixed phrase;
    never more than the two, none for a fast reply, and no model writes them;
 3. a "done" with "pending" (the confirmation card) is spoken from the card's fields, and the next utterance is matched by the chat's
@@ -26,14 +26,14 @@ from typing import Any, Protocol
 import httpx
 
 from falcon.core.confirmation import is_bare_confirmation, is_bare_decline
-from falcon.services.voice.speech import normalise
+from falcon.services.voice.speech import MONTHS, normalise
 
 log = logging.getLogger("falcon.voice")
 
 PROGRESS = {"en": "Give me a minute to search for the right answer for you.", "ar": "امنحني دقيقة لأبحث لك عن الإجابة الصحيحة."}
 STILL = {"en": "I'm still checking, thank you for waiting.", "ar": "ما زلت أتحقق، شكراً على صبرك."}
-# Decision #52: on the first tool event the phrase came 7 to 10 s after the customer stopped and then 15 s of silence followed, so it
-# sounded like a first answer that said nothing (FAILURE_DIARY #69). Timed from the moment the turn is sent, as voice platforms do.
+# On the first tool event the phrase came 7 to 10 s after the customer stopped and then 15 s of silence followed, so it
+# sounded like a first answer that said nothing. Timed from the moment the turn is sent, as voice platforms do.
 PROGRESS_AFTER = 1.2
 STILL_AFTER = 10.0
 UNAVAILABLE = {"en": "Sorry, I could not reach our systems just now, so nothing was checked or changed. Please say that again in a moment.",
@@ -45,8 +45,6 @@ LABELS = {"en": {"create_booking": "Book this flight", "cancel_booking": "Cancel
                  "add_extra_bag": "Add baggage", "request_exception": "Log an exception case for the customer-care team"},
           "ar": {"create_booking": "حجز هذه الرحلة", "cancel_booking": "إلغاء الحجز", "change_booking": "تغيير الرحلة",
                  "add_extra_bag": "إضافة أمتعة", "request_exception": "تسجيل حالة استثناء لفريق خدمة العملاء"}}
-MONTHS = {"en": ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
-          "ar": ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]}
 
 Speak = Callable[[str, str], Awaitable[None]]  # (text already normalised, kind: progress | reply | card | error)
 Observe = Callable[[str, dict], Awaitable[None]]  # (kind: user | done | spoken, payload): the transcript mirror (phase 2)
@@ -135,8 +133,7 @@ def card_text(pending: dict, lang: str) -> str:
 
 class CallSession:
     """One call: utterances in, spoken text out. One runtime turn at a time: whatever the customer says while a turn is running is
-    buffered, and all of it goes to the agent as one message when that turn ends (FAILURE_DIARY #66: a sentence cut into fragments
-    at every pause was answered fragment by fragment)."""
+    buffered, and all of it goes to the agent as one message when that turn ends (a sentence cut into fragments at every pause was answered fragment by fragment)."""
 
     def __init__(self, runtime: Runtime, lang: str, speak: Speak, observe: Observe | None = None,
                  progress_after: float = PROGRESS_AFTER, still_after: float = STILL_AFTER):
@@ -148,6 +145,7 @@ class CallSession:
         self.card_repeats = 0
         self._buffer: list[str] = []
         self._busy = False
+        self.turns = 0  # 'give me a minute' is said on the first turn of a call only; later turns get just the long-wait phrase (22 Oct)
 
     async def _say(self, text: str, kind: str) -> None:
         spoken = normalise(text, self.lang)
@@ -195,14 +193,19 @@ class CallSession:
         await self._run(events)
 
     async def _progress(self) -> None:
-        """The two timed phrases of rule 2; cancelled the moment the reply arrives. A phrase already started is finished (shield)."""
-        await asyncio.sleep(self.progress_after)
-        await asyncio.shield(self._say(PROGRESS[self.lang], "progress"))
-        await asyncio.sleep(self.still_after)
+        """The timed phrases of rule 2; cancelled the moment the reply arrives. A phrase already started is finished (shield).
+        The opening phrase is spoken on the first turn of the call only: on every turn it sounded like a tic (Hozayfa, 22 Oct)."""
+        if self.turns == 1:
+            await asyncio.sleep(self.progress_after)
+            await asyncio.shield(self._say(PROGRESS[self.lang], "progress"))
+            await asyncio.sleep(self.still_after)
+        else:
+            await asyncio.sleep(self.progress_after + self.still_after)
         await asyncio.shield(self._say(STILL[self.lang], "progress"))
 
     async def _run(self, events: AsyncIterator[tuple[str, dict]]) -> None:
         self._sent_at = time.monotonic()
+        self.turns += 1
         progress = asyncio.create_task(self._progress())
         try:
             async for event, data in events:

@@ -4,10 +4,9 @@ returns the clause in both languages.
 Every clause is embedded once at ingest (bge-m3 through OpenRouter: one multilingual space, so an Arabic question
 finds the English clause and vice versa) and stored in pgvector; a query is embedded the same way and ranked by
 cosine similarity. Query rewriting and expansion (rewrite.py: three LLM restatements of the question) runs adaptively: only
-when the first pass is low-confidence (decision #31); always-on rewriting was measured and found to lower the first result
-(decision #23).
+when the first pass is low-confidence; always-on rewriting was measured and found to lower the first result.
 
-There is no lexical layer (decision #24): when no vectors are available (no embedding provider configured, index
+There is no lexical layer: when no vectors are available (no embedding provider configured, index
 not embedded yet, or the embedding call failed) the search reports itself unavailable instead of guessing, and the
 agent tells the customer it cannot check the Conditions right now and offers a human agent.
 """
@@ -74,7 +73,7 @@ class PolicySearch:
 
     async def search(self, query: str, top_k: int = 6, rewrite: str | bool = "off", threshold: float | None = None, original_weight: float = 2.0,
                      aliases: bool | None = None) -> dict:
-        """Semantic search with adaptive query rewriting (decision #31).
+        """Semantic search with adaptive query rewriting.
 
         rewrite: "off" | "auto" | "always". The first pass embeds the question as typed; its confidence is the best cosine
         similarity in the index. In "auto" mode a confident first pass is the answer (one embedding call, ~1 s); below

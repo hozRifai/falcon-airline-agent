@@ -12,7 +12,7 @@ Run (needs the stack, costs a fraction of a cent in query embeddings and rewrite
     docker compose run --rm --build eval python -m falcon.eval.retrieval
     ... --variants dense,dense+rw
 Variants: dense (production) and dense+rw (LLM query rewriting, falcon.policy.rewrite). The lexical and hybrid variants
-measured on 17 Oct are in docs/EVALUATION.md; the lexical layer was removed afterwards (decision #24).
+measured on 17 Oct are in docs/EVALUATION.md; the lexical layer was removed afterwards.
 Writes eval/results/retrieval-<timestamp>/{report.md, per_query.jsonl}.
 """
 
@@ -98,7 +98,7 @@ async def run_variant(search: PolicySearch, variant: str, items: list[dict]) -> 
 
 
 def report(all_rows: list[dict], variants: list[str], n_items: int) -> str:
-    lines = [f"# Retrieval evaluation", "",
+    lines = ["# Retrieval evaluation", "",
              f"{datetime.now():%Y-%m-%d %H:%M} · gold: {n_items} answerable questions (EN + AR, same topics) · top {TOP} · "
              f"embeddings: {settings.embedding_model} · rewriter: {QueryRewriter().model}", "",
              "| variant | lang | " + " | ".join(METRICS) + " | latency ms |", "|---|---|" + "---|" * (len(METRICS) + 1)]

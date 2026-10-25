@@ -1,4 +1,4 @@
-"""Two confirmations of the same quote at the same moment execute it once (FAILURE_DIARY #73).
+"""Two confirmations of the same quote at the same moment execute it once.
 
 A double click, a network retry, or the voice "نعم" and the button together send the same write twice. Both requests used to pass
 the "quote not consumed" check before either marked it, so the booking was cancelled once but the refund was written twice. Live:

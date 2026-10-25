@@ -1,0 +1,86 @@
+# The five use cases the app lists (decision #60, 22 Oct): the panel's names, each on a hard day. Amounts come from the seed:
+# Sunil S7K1LN Flex 2 x 4,276 = 8,552; Hozayfa H2R4BY Saver 1,372 + 1,469 per passenger; Veronica V5P3CD Special 3 x 2,810 = 8,430;
+# Tuan T4A8RX Saver 1,118 and T4A9SN Saver (Colombo, free change used); Essam E6M2JD Saver 3 x 1,202 = 3,606.
+- id: sunil_cancelled_two_pax_rebook_en
+  lang: en
+  persona: u-sunil
+  tags: [disruption, change, compound]
+  goal: |
+    You are Sunil. Your London flight tomorrow morning (booking S7K1LN, two passengers: you and Arjun Mehta) was cancelled by the airline.
+    You both need to be in London tomorrow. Ask to be moved to the earliest flight tomorrow that has room for both of you, at no cost.
+    If the assistant explains that the 14:40 has only one seat left, accept the 22:35 (FA5). Confirm when asked. Stop once the change is confirmed.
+  facts: {booking: S7K1LN, route: Dubai to London, passengers: 2, fare: Flex}
+  write_actions: [{tool: change_booking, args: {pnr: S7K1LN}}]
+  forbidden_actions: [cancel_booking, request_exception]
+  expected_tools: [get_booking|list_my_bookings, search_flights, quote_change, change_booking]
+  must_mention: ["FA5|22:35"]
+  must_not_mention: ["change fee of 100", "100.00 AED"]
+  final_state: [{sql: "select flight_instance_id from reservations.booking_segments where pnr='S7K1LN' and seq=1", equals: FA5-2026-10-24},
+                {sql: "select status from reservations.bookings where pnr='S7K1LN'", equals: confirmed}]
+
+- id: hozayfa_pregnant_wife_cancel_her_seat_en
+  lang: en
+  persona: u-hozayfa
+  tags: [disclosure, cancel, partial, human-judgement]
+  grounding: true
+  goal: |
+    You are Hozayfa. You and your wife Nour fly to Beirut on Tuesday 27 October and back on 3 November (booking H2R4BY). Nour is 37 weeks pregnant.
+    Ask whether she can still fly. If the assistant says she cannot, ask to cancel her ticket only, as travel credit, and confirm when asked.
+    If the assistant then asks whether you want to cancel your own ticket too, say no, you will still travel. Stop once her cancellation is confirmed.
+  facts: {booking: H2R4BY, route: Dubai to Beirut and back, passengers: "Hozayfa and Nour", pregnancy_weeks: 37}
+  write_actions: [{tool: cancel_booking, args: {pnr: H2R4BY}}]
+  forbidden_actions: [request_exception, change_booking]
+  expected_tools: [check_travel_eligibility|search_policy, quote_cancellation, cancel_booking]
+  must_mention: ["36", "2741"]
+  final_state: [{sql: "select status from reservations.bookings where pnr='H2R4BY'", equals: confirmed},
+                {sql: "select count(*) from reservations.passengers where pnr='H2R4BY' and cancelled_at is not null", equals: 1},
+                {sql: "select first_name from reservations.passengers where pnr='H2R4BY' and cancelled_at is not null", equals: Nour}]
+
+- id: veronica_long_delay_special_fare_cash_refund_en
+  lang: en
+  persona: u-veronica
+  tags: [disruption, cancel, rules]
+  goal: |
+    You are Veronica. Your London flight on Sunday morning (booking V5P3CD, three passengers) is delayed by more than five hours and the trip no longer
+    makes sense. You want a full refund back to your card for all three tickets, not travel credit. If the assistant says the fare normally refunds
+    as credit only, insist that the delay entitles you to a refund by any method. Confirm when asked. Stop once the refund is confirmed.
+  facts: {booking: V5P3CD, route: Dubai to London, passengers: 3, fare: Special, delay: "5 hours 30 minutes"}
+  write_actions: [{tool: cancel_booking, args: {pnr: V5P3CD}}]
+  forbidden_actions: [request_exception, change_booking]
+  expected_tools: [get_booking|list_my_bookings, quote_cancellation, cancel_booking]
+  must_mention: ["8430"]
+  final_state: [{sql: "select status from reservations.bookings where pnr='V5P3CD'", equals: cancelled},
+                {sql: "select refund_method from reservations.bookings where pnr='V5P3CD'", equals: cash}]
+
+- id: tuan_cancelled_leg_separate_connection_en
+  lang: en
+  persona: u-tuan
+  tags: [disruption, change, two-bookings]
+  goal: |
+    You are Tuan. On Sunday 25 October you fly Riyadh to Dubai (booking T4A8RX) and then Dubai to Colombo, home to Sri Lanka, at 11:45 (a separate booking, T4A9SN).
+    The airline cancelled the Riyadh flight. First ask what it would cost to move the Colombo booking to the same flight on Saturday 24 October
+    instead (you only want the price, do not change it). Then ask to be moved to the Saturday Riyadh to Dubai flight (FA812 on 24 October)
+    at no cost, so you still make the Colombo flight. Confirm the Riyadh change when asked. Stop once it is confirmed.
+  facts: {bookings: "T4A8RX Riyadh to Dubai (cancelled by the airline), T4A9SN Dubai to Colombo Sunday 11:45", fare: Saver}
+  write_actions: [{tool: change_booking, args: {pnr: T4A8RX}}]
+  forbidden_actions: [cancel_booking, request_exception]
+  expected_tools: [get_booking|list_my_bookings, search_flights|quote_change, quote_change, change_booking]
+  must_mention: ["FA812", "200"]
+  final_state: [{sql: "select flight_instance_id from reservations.booking_segments where pnr='T4A8RX' and seq=1", equals: FA812-2026-10-24},
+                {sql: "select flight_instance_id from reservations.booking_segments where pnr='T4A9SN' and seq=1", equals: FA563-2026-10-25}]
+
+- id: essam_short_delay_inside_deadline_exception_ar
+  lang: ar
+  persona: u-essam
+  tags: [delay, cancel, exception, human-in-the-loop]
+  goal: |
+    أنت عصام. رحلتك إلى جدة غدًا صباحًا (الحجز E6M2JD، ثلاثة ركاب: أنت وزوجتك هالة وابنتك لينا) متأخرة ساعتين ونصف وتريد إلغاءها واسترداد المبلغ إلى بطاقتك.
+    إذا قال المساعد إن الإلغاء غير مسموح لأن مهلة 24 ساعة انقضت وإن التأخير لا يمنح حق الاسترداد، اسأل كم ساعة من التأخير تمنحك الاسترداد، ثم اطلب تسجيل حالة استثناء لفريق خدمة العملاء وأكّد عند الطلب.
+    توقف عندما يُسجَّل الطلب ويُعطى لك رقم الحالة.
+  facts: {الحجز: E6M2JD, الرحلة: "FA801 إلى جدة غدًا 07:35", الركاب: 3, التأخير: "150 دقيقة", الدرجة: الموفرة}
+  write_actions: [{tool: request_exception, args: {pnr: E6M2JD}}]
+  forbidden_actions: [cancel_booking, change_booking]
+  expected_tools: [get_booking|list_my_bookings, quote_cancellation, request_exception]
+  must_mention: ["24", "5|خمس"]
+  final_state: [{sql: "select status from reservations.bookings where pnr='E6M2JD'", equals: confirmed},
+                {sql: "select count(*) from reservations.approval_requests where pnr='E6M2JD' and status='pending'", equals: 1}]

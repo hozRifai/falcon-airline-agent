@@ -125,7 +125,8 @@ CREATE TABLE reservations.passengers (
   first_name       text NOT NULL,
   last_name        text NOT NULL,
   pax_type         text NOT NULL CHECK (pax_type IN ('adult','child','infant')),
-  special_request  text                                -- free text typed by customers: untrusted data (see eval injection task)
+  special_request  text,                               -- free text typed by customers: untrusted data (see eval injection task)
+  cancelled_at     timestamptz                         -- cancelled on a booking that stays for the others (decision #60)
 );
 
 CREATE TABLE reservations.booking_extras (
@@ -148,16 +149,6 @@ CREATE TABLE reservations.transactions (
   created_at  timestamptz NOT NULL
 );
 
-CREATE TABLE reservations.attachments (               -- documents the customer attached in the chat (decision #33): evidence for exception cases
-  id             serial PRIMARY KEY,
-  customer_id    text NOT NULL,
-  filename       text NOT NULL,
-  content_type   text NOT NULL,
-  size_bytes     int NOT NULL,
-  sha256         text NOT NULL,
-  data           bytea NOT NULL,                      -- the demo keeps the bytes here; a deployment would point at object storage
-  uploaded_at    timestamptz NOT NULL
-);
 CREATE TABLE reservations.email_outbox (              -- what the agent emailed the customer (decision #32); the demo's mail service is this table
   id             serial PRIMARY KEY,
   pnr            text REFERENCES reservations.bookings(pnr),
@@ -270,7 +261,8 @@ CREATE TABLE agent.users (                             -- demo identity provider
   lang           text NOT NULL DEFAULT 'en',
   persona_note_en text,
   persona_note_ar text,
-  sort_order     int NOT NULL DEFAULT 100
+  sort_order     int NOT NULL DEFAULT 100,
+  shown          boolean NOT NULL DEFAULT true        -- in the app's use-case list; hidden users still sign in (the evaluation's personas)
 );
 
 CREATE TABLE agent.audit_log (

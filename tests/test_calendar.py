@@ -1,4 +1,4 @@
-"""Relative periods are computed, not guessed (FAILURE_DIARY #39): the boundaries are pinned here for the frozen clock and the edges."""
+"""Relative periods are computed, not guessed: the boundaries are pinned here for the frozen clock and the edges."""
 
 from __future__ import annotations
 
@@ -42,9 +42,9 @@ def test_edges_sunday_and_month_end():
 
 
 def test_calendar_line_names_both_languages_and_exact_dates():
-    line = calendar_line(datetime(2026, 10, 20, 9, tzinfo=timezone(timedelta(hours=4))))
+    line = calendar_line(datetime(2026, 10, 23, 9, tzinfo=timezone(timedelta(hours=4))))
     assert line.startswith("Calendar, computed from the clock")
     assert "next week / الأسبوع القادم = Mon 2026-10-26 to Sun 2026-11-01" in line
     assert "the first week of next month / الأسبوع الأول من الشهر القادم = Sun 2026-11-01 to Sat 2026-11-07" in line
-    assert "today / اليوم = Tue 2026-10-20;" in line
+    assert "today / اليوم = Fri 2026-10-23;" in line
     assert "{" not in line and "}" not in line  # it is inserted into a str.format template

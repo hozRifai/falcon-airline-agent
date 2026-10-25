@@ -26,7 +26,7 @@ def main() -> None:
     args = ap.parse_args()
     folder = Path(args.results_dir)
     tasks = {t.id: t for t in load_tasks()}
-    runs = [json.loads(l) for l in (folder / "runs.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+    runs = [json.loads(line) for line in (folder / "runs.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     full_results = any(e.get("result_json") is not None for r in runs for t in r.get("transcript", []) for e in t.get("what_i_checked", []))
     for r in runs:
         task = tasks.get(r["task_id"])

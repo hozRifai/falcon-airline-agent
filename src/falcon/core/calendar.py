@@ -1,4 +1,4 @@
-"""Relative periods, computed from the frozen clock (FAILURE_DIARY #39).
+"""Relative periods, computed from the frozen clock.
 
 "Next week", "this weekend", "the first week of next month" are date arithmetic, and date arithmetic is the model's weak
 spot: asked for the cheapest flight "next week" it searched one day, a week from today. So the calendar is computed here,
@@ -47,7 +47,7 @@ def periods(today: date) -> list[Period]:
     month_end = _next_month_start(today) - timedelta(days=1)
     nm_start = _next_month_start(today)
     nm_end = _next_month_start(nm_start) - timedelta(days=1)
-    P = Period  # noqa: N806
+    P = Period
     return [
         P("today", "today", "اليوم", today, today),
         P("tomorrow", "tomorrow", "غدًا", today + timedelta(days=1), today + timedelta(days=1)),

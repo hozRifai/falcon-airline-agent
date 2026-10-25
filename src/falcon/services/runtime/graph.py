@@ -8,10 +8,10 @@
                  └─────────────────────────────────────────────────────────────────────────────────────┘
 
 - prepare: deterministic language detection on the last human message; the reply language is a fact, not a guess.
-- guard: the input guardrail (guardrails.py, decision #29): personal data is removed from the message before anything else
+- guard: the input guardrail (guardrails.py): personal data is removed from the message before anything else
   sees it, the message is classified (patterns, then a small model), and an out-of-scope request or a prompt injection is
   answered with a fixed refusal without the agent ever running; social engineering and abuse reach the agent with a note.
-- agent: one model call with the persona's tools bound; the system prompt carries role, language, time, customer name.
+- agent: one model call with the customer's tools bound; the system prompt carries language, time, calendar, customer name.
   Every final draft (no tool calls) is reviewed against the conversation's tool trace (review.py: amounts, action claims,
   policy sources, plus the output guards below); a failing draft goes back to the model with the exact problem, up to
   REVIEW_MAX_ROUNDS times, then the customer gets a safe "could not resolve" message. The outcome is recorded in
@@ -42,14 +42,17 @@ from langgraph.types import interrupt
 
 from falcon.core.arabic import preferred_reply_language
 from falcon.core.config import settings
+from falcon.core.confirmation import is_bare_confirmation
+from falcon.core.faithfulness import WRITE_TOOLS  # the writes the gate interrupts; the reviewer reads the same set
 from falcon.core.mcp_server import redact
 from falcon.core.telemetry import tracer
 
 from .guardrails import guard as guard_message
 from .guardrails import refusal
-from .personas import WRITE_TOOLS, tools_for_topic
+from .llm import use_fake_model
+from .personas import tools_for_topic
 from .prompts import system_prompt
-from .review import HELD, HELD_POLICY, POLICY_HOLD_PROBLEMS, citation_support, cited_clause_ids, model_review, review_draft
+from .review import HELD, HELD_POLICY, POLICY_HOLD_PROBLEMS, citation_support, cited_clause_ids, review_draft, text_of
 
 log = logging.getLogger("falcon.runtime")
 
@@ -60,7 +63,7 @@ CUT_OFF = {
 }
 
 
-# Said by the runtime, not the model, when two replies in a row could not be resolved and a handover case was logged (decision #43).
+# Said by the runtime, not the model, when two replies in a row could not be resolved and a handover case was logged.
 ESCALATED = {
     "en": ("I have not been able to resolve this for you twice in a row, so I have logged case #{case} for a human agent with a summary of our "
            "conversation; the team will reply to you by email. I can still help with your bookings in the meantime."),
@@ -70,15 +73,15 @@ ESCALATED = {
 UNRESOLVED_STATUSES = {"held", "cut_off"}
 
 
-# "Press the confirm button below" with no tool call: the button exists only when a write tool is called (decision #41 again: the
-# full run of 19 Oct lost a rebooking this way after a correct quote, in Arabic). With the quote on the table, the runtime raises the card.
+# "Press the confirm button below" with no tool call: the button exists only when a write tool is called (the full
+# run of 19 Oct lost a rebooking this way after a correct quote, in Arabic). With the quote on the table, the runtime raises the card.
 CARD_ANNOUNCE_RE = re.compile(r"confirm(?:ation)? button|press confirm|click confirm|زر التأكيد|اضغط\S* (?:على )?(?:زر )?(?:التأكيد|تأكيد)|سيظهر (?:لك )?زر", re.IGNORECASE)
 
 
 def card_shortcut(state: AgentState, response: AIMessage) -> AIMessage | None:
     """A final draft that tells the customer to press the confirm button, with an allowed unconsumed quote from this turn: the matching
     write call instead, so the gate shows the card the draft promised."""
-    if response.tool_calls or not CARD_ANNOUNCE_RE.search(_text_of(response)):
+    if response.tool_calls or not CARD_ANNOUNCE_RE.search(text_of(response)):
         return None
     quote = open_quote(list(state.get("messages", [])), this_turn=True)
     if not quote:
@@ -90,11 +93,11 @@ def card_shortcut(state: AgentState, response: AIMessage) -> AIMessage | None:
                      usage_metadata=response.usage_metadata, response_metadata=response.response_metadata)
 
 
-# Output guards (FAILURE_DIARY #29-31). A chunk of 20-200 characters repeated back to back three times is a
+# Output guards. A chunk of 20-200 characters repeated back to back three times is a
 # degenerate generation, not a list (list items differ in flight number or date). An announced check with no tool
 # call, before any tool in the turn, leaves the customer waiting for something that will never come.
 REPEATED = re.compile(r"(.{20,200}?)\1\1", re.DOTALL)
-# DeepSeek's own scaffolding, seen verbatim in replies (FAILURE_DIARY #29, #47); never part of an answer to a customer
+# DeepSeek's own scaffolding, seen verbatim in replies; never part of an answer to a customer
 LEAK_RE = re.compile(r"Use the results below to formulate an answer[^.\n]*(?:needed)?\.?|unless additional information is needed\.?", re.IGNORECASE)
 REPEATED_RUN = re.compile(r"(.{20,200}?)\1+", re.DOTALL)
 ANNOUNCED = re.compile(r"\b(I'?ll|I will|let me|I am going to|I'm going to|let's|I'm) (now |go ahead and |start |just )?(check|look|verify|search|find|review|cancel|change|book|process|log|proceed|rebook|add|show|start)\b|"
@@ -115,8 +118,8 @@ GARBLED = {
 }
 
 
-def _reply_problem(response: AIMessage, state: "AgentState") -> str | None:
-    text = _text_of(response)
+def _reply_problem(response: AIMessage, state: AgentState) -> str | None:
+    text = text_of(response)
     if REPEATED.search(text):
         return "repeated"
     if not response.tool_calls and not state.get("turn_tool_calls") and ANNOUNCED.search(text):
@@ -143,24 +146,15 @@ def _add_usage(a: dict, b: dict) -> dict:
 
 class AgentState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
-    unresolved: int  # replies in a row the customer could not use (held or cut off); reset by any reply that went out (decision #43)
+    unresolved: int  # replies in a row the customer could not use (held or cut off); reset by any reply that went out
     lang: str
-    role: str
     user_name: str
-    preferred_lang: str
     turn_log: list[dict]
     turn_tool_calls: int
     pending: dict | None
     verification: dict | None
     guardrail: dict | None
-    disclosed: list[str]  # kinds of travel-affecting facts disclosed so far in this thread (decision #34)
-
-
-def _text_of(msg: AnyMessage) -> str:
-    c = msg.content
-    if isinstance(c, list):
-        return "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in c)
-    return str(c)
+    disclosed: list[str]  # kinds of travel-affecting facts disclosed so far in this thread
 
 
 def _summary(result: Any) -> str:
@@ -174,29 +168,29 @@ def _tools_from(config: RunnableConfig) -> dict[str, Any]:
 
 async def prepare(state: AgentState, config: RunnableConfig) -> dict:
     last = next((m for m in reversed(state.get("messages", [])) if isinstance(m, HumanMessage)), None)
-    lang = preferred_reply_language(_text_of(last), state.get("lang", config["configurable"].get("default_lang", "en"))) if last else state.get("lang", "en")
+    lang = preferred_reply_language(text_of(last), state.get("lang", config["configurable"].get("default_lang", "en"))) if last else state.get("lang", "en")
     return {"lang": lang, "turn_log": [], "turn_tool_calls": 0, "pending": None, "verification": None}
 
 
 def previous_reply(messages: list[AnyMessage]) -> str | None:
-    """The assistant's last text reply before the customer's latest message: the classifier's context (decision #51)."""
+    """The assistant's last text reply before the customer's latest message: the classifier's context."""
     msgs = list(messages or [])
     last_human = max((i for i, m in enumerate(msgs) if isinstance(m, HumanMessage)), default=None)
     scope = msgs[:last_human] if last_human is not None else msgs
     for m in reversed(scope):
-        if isinstance(m, AIMessage) and _text_of(m).strip():
-            return _text_of(m)
+        if isinstance(m, AIMessage) and text_of(m).strip():
+            return text_of(m)
     return None
 
 
 async def guard(state: AgentState, config: RunnableConfig) -> dict:
-    """Input guardrail (decision #29). The app's opening message is not a customer message and is not classified."""
+    """Input guardrail. The app's opening message is not a customer message and is not classified."""
     last = next((m for m in reversed(state.get("messages", [])) if isinstance(m, HumanMessage)), None)
-    text = _text_of(last) if last else ""
+    text = text_of(last) if last else ""
     if last is None or not text.strip() or text.startswith("[[opening]]"):
         return {"guardrail": None}
     lang = state.get("lang", "en")
-    pre = config["configurable"].get("guard_precomputed")  # the API ran the classifier while it fetched the tools (decision #47)
+    pre = config["configurable"].get("guard_precomputed")  # the API ran the classifier while it fetched the tools
     context = previous_reply(state.get("messages", []))
     if pre and pre.get("text") == text and pre.get("context") == context:
         clean, g = pre["clean"], pre["guard"]
@@ -218,13 +212,9 @@ async def guard(state: AgentState, config: RunnableConfig) -> dict:
     return out
 
 
-# A bare "yes" after a quote is not a judgement (decision #41): the runtime raises the confirmation card itself. DeepSeek, asked in
+# A bare "yes" after a quote is not a judgement: the runtime raises the confirmation card itself. DeepSeek, asked in
 # Arabic, wrote "I will cancel now, press the confirm button" instead of calling the tool often enough that the Arabic customer saw
-# the cut-off message and no card (FAILURE_DIARY #53).
-# The vocabulary lives in falcon.core.confirmation so the voice channel uses the very same words (VOICE_PLAN rule 3).
-from falcon.core.confirmation import CONFIRM_CORE, CONFIRM_FILLER, is_bare_confirmation  # noqa: E402,F401
-
-
+# the cut-off message and no card. The yes/no vocabulary lives in falcon.core.confirmation, shared with the voice channel.
 QUOTE_ACTION = {"cancel": "cancel_booking", "change": "change_booking", "bag": "add_extra_bag", "book": "create_booking"}
 
 
@@ -234,7 +224,7 @@ OFFER_KEYS = ("kind", "pnr", "refund_method", "refund", "fee", "amount_due", "de
 def open_quote(messages: list[AnyMessage], this_turn: bool = False) -> dict | None:
     """The allowed quote the assistant presented in its last turn (or, with this_turn, since the customer's last message), when no
     write has consumed it yet; None otherwise. Two different offers in that turn (credit or card, two flights) are a question, not
-    a quote: None, so no shortcut picks one (FAILURE_DIARY #65); the same offer quoted again counts once, and the latest is kept."""
+    a quote: None, so no shortcut picks one; the same offer quoted again counts once, and the latest is kept."""
     scope = messages if this_turn else messages[:-1]
     last_human = max((i for i, m in enumerate(scope) if isinstance(m, HumanMessage)), default=None)
     if last_human is None:
@@ -244,22 +234,22 @@ def open_quote(messages: list[AnyMessage], this_turn: bool = False) -> dict | No
     for m in scope[last_human + 1:]:
         if isinstance(m, ToolMessage) and (m.name or "").startswith("quote_"):
             try:
-                data = json.loads(_text_of(m))
-            except Exception:
+                data = json.loads(text_of(m))
+            except (json.JSONDecodeError, TypeError):
                 continue
             if isinstance(data, dict) and data.get("allowed") and data.get("quote_id") and data.get("kind") in QUOTE_ACTION:
                 quote = data
                 offers.add(json.dumps({k: data.get(k) for k in OFFER_KEYS}, sort_keys=True, default=str))
     if not quote or len(offers) > 1:
         return None
-    consumed = any(isinstance(m, ToolMessage) and (m.name or "") == QUOTE_ACTION[quote["kind"]] and quote["quote_id"] in _text_of(m) for m in messages)
+    consumed = any(isinstance(m, ToolMessage) and (m.name or "") == QUOTE_ACTION[quote["kind"]] and quote["quote_id"] in text_of(m) for m in messages)
     return None if consumed else quote
 
 
 def confirmation_shortcut(state: AgentState) -> dict | None:
     """The write tool call for a bare confirmation of the quote just presented, so the card is raised without a model call."""
     msgs = state.get("messages", [])
-    if not msgs or not isinstance(msgs[-1], HumanMessage) or not is_bare_confirmation(_text_of(msgs[-1])):
+    if not msgs or not isinstance(msgs[-1], HumanMessage) or not is_bare_confirmation(text_of(msgs[-1])):
         return None
     quote = open_quote(msgs)
     if not quote:
@@ -282,7 +272,7 @@ async def confirm(state: AgentState, config: RunnableConfig) -> dict:
 
 
 async def _review(response: AIMessage, state: AgentState) -> tuple[list[str], str, dict | None]:
-    """All checks on one draft: output guards, then (for a final reply) the deterministic review and the optional model reviewer.
+    """All checks on one draft: output guards, then (for a final reply) the deterministic review and the citation check.
     Returns (problems, nudge for the retry, review record)."""
     guard = _reply_problem(response, state)
     if guard:
@@ -291,35 +281,47 @@ async def _review(response: AIMessage, state: AgentState) -> tuple[list[str], st
         return [], "", None
     r = review_draft(response, state["messages"], lang=state.get("lang"), guardrail=state.get("guardrail"))
     record = {"problems": list(r.problems), "verdict": r.verdict.to_dict() if r.verdict else None}
-    if r.ok and settings.review_citations and cited_clause_ids(_text_of(response)):
+    if r.ok and settings.review_citations and cited_clause_ids(text_of(response)):
         r = await citation_support(response, state["messages"])
         record["problems"] = list(r.problems)
         if r.reviewer_note:
             record["reviewer_note"] = r.reviewer_note
-    if r.ok and settings.review_llm:
-        r = await model_review(response, state["messages"])
-        record["problems"] = list(r.problems)
-        record["reviewer_note"] = r.reviewer_note
     return list(r.problems), r.nudge, record
 
 
 def turn_topic(state: AgentState) -> str | None:
-    """The topic the guard's classifier named for this message, when routing is on and a real classifier named it (decision #46)."""
+    """The topic the guard's classifier named for this message, when routing is on and a real classifier named it."""
     g = state.get("guardrail") or {}
-    if not settings.topic_routing or settings.llm_provider == "fake" or g.get("source") != "llm":
+    if not settings.topic_routing or use_fake_model() or g.get("source") != "llm":
         return None
     topic = g.get("topic") or "general"
     return topic if topic != "general" else None
+
+
+SYSTEM_NAMES = {"reservations": "the booking system (bookings, quotes, changes, cancellations)",
+                "flightops": "the flight operations system (live flight status and disruptions)",
+                "policy": "the Conditions of Carriage document"}
+UNAVAILABLE_NOTE = ("SYSTEMS DOWN RIGHT NOW: {systems}. Their tools are missing from your list on purpose. If the customer needs one of them, "
+                    "say plainly that it cannot be checked at the moment, never guess what it would return, and offer to try again shortly "
+                    "or to hand the conversation to a human agent.")
+
+
+def unavailable_note(unavailable: list[str]) -> str | None:
+    """What the agent is told when MCP servers could not be reached for this turn; None when all are up."""
+    if not unavailable:
+        return None
+    return UNAVAILABLE_NOTE.format(systems="; ".join(SYSTEM_NAMES.get(name, name) for name in unavailable))
 
 
 async def agent(state: AgentState, config: RunnableConfig) -> dict:
     llm = config["configurable"]["llm"]
     topic = turn_topic(state)
     tools = tools_for_topic(topic, list(_tools_from(config).values()))
-    prompt = system_prompt(state["role"], lang=state["lang"], name=state["user_name"], preferred_lang=state.get("preferred_lang", "en"), topic=topic)
+    prompt = system_prompt(lang=state["lang"], name=state["user_name"], topic=topic)
     model = llm.bind_tools(tools) if tools else llm
     note = (state.get("guardrail") or {}).get("note")  # what the guardrail flagged or removed in this turn's message
-    messages = [SystemMessage(content=prompt + ("\n\n" + note if note else ""))] + list(state["messages"])
+    notes = [n for n in (note, unavailable_note(config["configurable"].get("unavailable") or [])) if n]
+    messages = [SystemMessage(content="\n\n".join([prompt, *notes]))] + list(state["messages"])
     lang = state.get("lang", "en")
     try:
         emit = get_stream_writer()  # "review" events for the UI: a draft sent back, a reply held (stream_mode "custom")
@@ -343,7 +345,7 @@ async def agent(state: AgentState, config: RunnableConfig) -> dict:
         if len(rounds) > settings.review_max_rounds:
             # Every round failed. A repeated-text draft can still be salvaged by stripping the repeats; anything else is held.
             if problems == ["repeated"]:
-                response = AIMessage(content=_strip_repeats(_text_of(response), lang), id=response.id, usage_metadata=response.usage_metadata, response_metadata=response.response_metadata)
+                response = AIMessage(content=_strip_repeats(text_of(response), lang), id=response.id, usage_metadata=response.usage_metadata, response_metadata=response.response_metadata)
             else:
                 log.warning("reviewer held a reply after %d rounds: %s", len(rounds) - 1, [r["problems"] for r in rounds])
                 with tracer("falcon.runtime").start_as_current_span("reviewer.hold", attributes={"falcon.rounds": len(rounds) - 1, "falcon.problems": ",".join(problems), "falcon.lang": lang}):
@@ -359,7 +361,7 @@ async def agent(state: AgentState, config: RunnableConfig) -> dict:
         except Exception as exc:  # noqa: BLE001 - the retry is best effort; the customer still gets a safe reply
             log.warning("corrective retry failed (%s)", exc)
             if problems == ["repeated"]:
-                response = AIMessage(content=_strip_repeats(_text_of(response), lang), id=response.id, usage_metadata=response.usage_metadata, response_metadata=response.response_metadata)
+                response = AIMessage(content=_strip_repeats(text_of(response), lang), id=response.id, usage_metadata=response.usage_metadata, response_metadata=response.response_metadata)
             else:
                 response = AIMessage(content=HELD.get(lang, HELD["en"]), id=response.id, usage_metadata=response.usage_metadata, response_metadata=response.response_metadata)
                 held = True
@@ -399,14 +401,14 @@ async def agent(state: AgentState, config: RunnableConfig) -> dict:
         out["verification"] = {
             "status": "held" if held else ("retried" if rounds else "verified"),
             "rounds": rounds, "amounts": verdict.get("amounts", []), "evidence": verdict.get("evidence", 0),
-            "checked": verdict.get("checked", True), "reviewer": "rules+llm" if settings.review_llm else "rules",
+            "checked": verdict.get("checked", True), "reviewer": "rules",
         }
         out["unresolved"] = state.get("unresolved", 0) + 1 if held else 0
     return out
 
 
 def needs_escalation(state: AgentState, config: RunnableConfig) -> bool:
-    """Two unresolved replies in a row (decision #43), and the handover tool is available to this persona."""
+    """Two unresolved replies in a row, and the handover tool is available to this persona."""
     limit = settings.escalate_after_unresolved
     status = (state.get("verification") or {}).get("status")
     return bool(limit) and status in UNRESOLVED_STATUSES and state.get("unresolved", 0) >= limit and "handover_to_human" in _tools_from(config)
@@ -416,7 +418,7 @@ async def escalate(state: AgentState, config: RunnableConfig) -> dict:
     """The runtime logs the handover case itself and replaces the held reply with the case number: no model call, nothing to hold."""
     lang = state.get("lang", "en")
     held: AIMessage = state["messages"][-1]
-    humans = [_text_of(m) for m in state["messages"] if isinstance(m, HumanMessage)][-3:]
+    humans = [text_of(m) for m in state["messages"] if isinstance(m, HumanMessage)][-3:]
     summary = "Automatic handover after two unresolved replies in a row. Recent customer messages: " + " | ".join(h[:300] for h in humans)
     already = next((e for e in state.get("turn_log", []) if e.get("tool") == "handover_to_human" and e.get("ok") and (e.get("result_json") or {}).get("request_id")), None)
     if already:
@@ -434,12 +436,12 @@ async def escalate(state: AgentState, config: RunnableConfig) -> dict:
         latency = int((time.perf_counter() - started) * 1000)
         try:
             data = json.loads(result)
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             data = None
         ok = isinstance(data, dict) and bool(data.get("request_id"))
         entry = {"tool": "handover_to_human", "args": {"reason": "unresolved"}, "ok": ok, "latency_ms": latency, "summary": _summary(result), "result_json": data if isinstance(data, dict) else None,
                  "escalation": True}
-    log.warning("escalated to a human after %d unresolved replies: %s", state.get("unresolved", 0), "case %s" % data.get("request_id") if ok else result[:200])
+    log.warning("escalated to a human after %d unresolved replies: %s", state.get("unresolved", 0), f"case {data.get('request_id')}" if ok else result[:200])
     with tracer("falcon.runtime").start_as_current_span("escalation", attributes={"falcon.ok": ok, "falcon.unresolved": state.get("unresolved", 0), "falcon.lang": lang}):
         pass
     turn_log = list(state.get("turn_log", [])) + ([entry] if entry else [])
@@ -474,8 +476,8 @@ def _describe_action(tc: dict, messages: list[AnyMessage]) -> dict:
         if not (isinstance(m, ToolMessage) and (m.name or "").startswith("quote_")):
             continue
         try:
-            data = json.loads(_text_of(m))
-        except Exception:
+            data = json.loads(text_of(m))
+        except (json.JSONDecodeError, TypeError):
             continue
         if not isinstance(data, dict):
             continue
@@ -526,12 +528,12 @@ async def tools_node(state: AgentState, config: RunnableConfig) -> dict:
                 raw = await tool.ainvoke(tc["args"])
                 result = raw if isinstance(raw, str) else ("".join(b.get("text", "") for b in raw if isinstance(b, dict)) if isinstance(raw, list) else json.dumps(raw, default=str))
                 ok = not result.startswith("Error")
-            except Exception as exc:  # the tool layer already converts errors; this is the last net
+            except Exception as exc:  # noqa: BLE001 - the tool layer already converts errors; this is the last net
                 result, ok = f"Error: {exc}", False
         latency = int((time.perf_counter() - started) * 1000)
         try:
             result_json = json.loads(result)
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             result_json = None
         entry = {"tool": tc["name"], "args": redact(tc["args"]), "ok": ok, "latency_ms": latency, "summary": _summary(result), "result_json": result_json if isinstance(result_json, dict) else None}
         if tc["name"] in ("search_policy", "get_clause", "get_article", "check_travel_eligibility") and isinstance(result_json, dict):
@@ -539,7 +541,7 @@ async def tools_node(state: AgentState, config: RunnableConfig) -> dict:
             ids = [r.get("clause_id") for r in result_json.get("results", [])] if "results" in result_json else [result_json.get("clause_id")] if "clause_id" in result_json else [c.get("clause_id") for c in result_json.get("clauses", [])]
             entry["clause_ids"] = [i for i in ids if i]
         elif isinstance(result_json, dict) and isinstance(result_json.get("clauses"), list) and all(isinstance(c, str) for c in result_json["clauses"]):
-            entry["clause_ids"] = list(result_json["clauses"])  # a rules-engine result that names the clauses it rests on (decision #38) grounds a citation too
+            entry["clause_ids"] = list(result_json["clauses"])  # a rules-engine result that names the clauses it rests on grounds a citation too
         log.append(entry)
         out_messages.append(ToolMessage(content=result, tool_call_id=tc["id"], name=tc["name"]))
     return {"messages": out_messages, "turn_log": log}

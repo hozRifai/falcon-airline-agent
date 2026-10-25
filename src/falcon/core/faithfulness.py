@@ -1,6 +1,6 @@
 """Faithfulness checks shared by the runtime's verification gate and the evaluation scorer.
 
-One definition, two uses (decision #26): the gate in `runtime/verify.py` blocks a reply before the customer sees it, the
+One definition, two uses: the gate in `runtime/verify.py` blocks a reply before the customer sees it, the
 scorer in `eval/metrics.py` reports the same checks over recorded conversations. Both are deterministic and check a
 reply against the trace of the conversation, never against the model's opinion:
 
@@ -22,9 +22,11 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from .arabic import DIGITS
+
 # Tools that change the world for a customer; a successful result from one of them is evidence for a "done" claim.
 WRITE_TOOLS = {"create_booking", "cancel_booking", "change_booking", "add_extra_bag", "request_exception"}
-# Side effects that need no confirmation button but are still the only evidence for "I have sent/done it" (decision #32).
+# Side effects that need no confirmation button but are still the only evidence for "I have sent/done it".
 EVIDENCE_TOOLS = WRITE_TOOLS | {"send_itinerary", "handover_to_human"}  # a logged case is the evidence for "I have logged a case"
 # Tools whose results describe the booking's state in the reservations system; a cancelled status there is also evidence.
 BOOKING_STATE_TOOLS = {"get_booking", "list_my_bookings", "get_request_status", "create_booking", "cancel_booking", "change_booking"}
@@ -33,7 +35,6 @@ ACTION_EVIDENCE_RE = re.compile(r'"status":\s*"(cancelled|changed|approved|compl
 # money in a reply: "1,291 AED", "AED 100", "100.00 per passenger", "١٬٢٩١ درهم"; plain integers without a currency
 # mark or decimals are not counted (hours, clause numbers, dates have their own shapes)
 MONEY_RE = re.compile(r"(?:AED|د\.إ|درهم(?:اً|ا)?)\s*\**\s*(\d[\d,٬ ]*(?:\.\d{1,2})?)|(\d[\d,٬ ]*(?:\.\d{1,2})?)\s*\**\s*(?:AED|د\.إ|درهم(?:اً|ا)?)|\b(\d{1,3}(?:[,٬]\d{3})+(?:\.\d{2})?|\d+\.\d{2})\b")
-ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
 # clause references ("clause 8.10", "Article 10.2.1", "[7.1]", "البند 8.10") are not money; they are removed before amounts are read
 CLAUSE_REF_RE = re.compile(r"(?:\b(?:clauses?|articles?|sections?|paragraphs?)\s*(?:no\.?\s*)?|البند\s*|البنود\s*|المادة\s*|المواد\s*|الفقرة\s*|الفقرات\s*|\[)\s*\d{1,2}(?:\.\d{1,2}){1,3}(?:\s*(?:,|and|or|و|&|/)\s*\d{1,2}(?:\.\d{1,2}){1,3})*\]?",
                            re.IGNORECASE)
@@ -61,7 +62,7 @@ CASE_REF_RE = re.compile(r"(?:\b(?:case|request|ticket)\s*(?:number|no\.?|id)?\s
 
 
 def norm_amount(s: str) -> str:
-    s = s.translate(ARABIC_DIGITS).replace(",", "").replace("٬", "").replace(" ", "")
+    s = s.translate(DIGITS).replace(",", "").replace("٬", "").replace(" ", "")
     try:
         return f"{float(s):.2f}"
     except ValueError:
@@ -79,11 +80,7 @@ def amounts_in(text: str) -> set[str]:
 
 def numbers_in(blob: str) -> set[str]:
     """Every number in a tool result (any field), normalised to two decimals, so 1291, "1291.00" and 1,291 agree."""
-    return {norm_amount(n) for n in NUMBER_RE.findall((blob or "").translate(ARABIC_DIGITS))}
-
-
-def tool_result_text(result) -> str:
-    return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+    return {norm_amount(n) for n in NUMBER_RE.findall((blob or "").translate(DIGITS))}
 
 
 def is_success(tool: str, result_text: str) -> bool:
@@ -93,7 +90,7 @@ def is_success(tool: str, result_text: str) -> bool:
         return False
     try:
         data = json.loads(t)
-    except Exception:
+    except (json.JSONDecodeError, TypeError):
         return True
     return not (isinstance(data, dict) and data.get("declined"))
 
@@ -161,9 +158,9 @@ def check_reply(text: str, tool_results: list[tuple[str, str]], customer_texts: 
         v.unsupported_amounts = sorted(a for a in said if a not in allowed)
     if DONE_CLAIM_RE.search(text or "") and not action_evidence(tool_results):
         v.false_claim = True
-    refs = {m.group(1).translate(ARABIC_DIGITS).upper() for m in CASE_REF_RE.finditer((text or "").translate(ARABIC_DIGITS))}
+    refs = {m.group(1).translate(DIGITS).upper() for m in CASE_REF_RE.finditer((text or "").translate(DIGITS))}
     if refs:
-        seen = (" ".join(r for _, r in tool_results) + " " + " ".join(customer_texts)).translate(ARABIC_DIGITS).upper()
+        seen = (" ".join(r for _, r in tool_results) + " " + " ".join(customer_texts)).translate(DIGITS).upper()
         if any(ref not in seen for ref in refs):
             v.false_claim = True  # a number the systems never issued
     return v

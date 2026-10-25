@@ -1,4 +1,4 @@
-"""The reviewer: every draft reply is checked against the conversation's tool trace before the customer sees it (decision #26).
+"""The reviewer: every draft reply is checked against the conversation's tool trace before the customer sees it.
 
 The checks are deterministic and cheap (microseconds, no model call), because they compare the draft with facts the runtime
 already holds:
@@ -7,26 +7,25 @@ already holds:
   own words; a "your booking has been cancelled" claim needs a successful write or a booking state that says so.
 - policy source: a draft that quotes the Conditions of Carriage or a clause must follow a policy tool call in this conversation.
 - search scope: a customer who named a period (next week, this weekend, the first week of November) and gets flights back must
-  have had the whole period searched, not one day (FAILURE_DIARY #39). Deterministic in execution, heuristic in coverage: the
+  have had the whole period searched, not one day. Deterministic in execution, heuristic in coverage: the
   period and day phrases are lists, so a phrase outside them is simply not checked; a false positive costs one retry.
 - output shape (graph.py): a degenerate repeated draft; an announced check with no tool call.
-- output guardrails (decision #29): no personal data written out in full (card, IBAN, Emirates ID, email, phone), no part of the
+- output guardrails: no personal data written out in full (card, IBAN, Emirates ID, email, phone), no part of the
   instructions repeated, no program code: an airline assistant has no reason to produce any of these, so each is a refusal.
-- language (FAILURE_DIARY #43): the reply is written in the script of the customer's last message (codes, PNRs, flight numbers,
+- language: the reply is written in the script of the customer's last message (codes, PNRs, flight numbers,
   amounts and clause ids are Latin in both languages and are ignored).
-- disclosed facts (decision #34, FAILURE_DIARY #48): when the guard recorded a fact the Conditions may restrict (a pregnancy, an
+- disclosed facts: when the guard recorded a fact the Conditions may restrict (a pregnancy, an
   infant, a child alone, a medical condition, an animal, an item, a document problem), the reply must follow a successful policy tool
   call in the same turn (check_travel_eligibility, search_policy, get_clause); "have a safe trip" with no check goes back.
-- policy answers (FAILURE_DIARY #43): a clause id cited in the reply must have been returned by a policy tool in this conversation
+- policy answers: a clause id cited in the reply must have been returned by a policy tool in this conversation
   (or be the parent of one that was), and a figure with a unit (kg, cm, hours, days, weeks, %) must appear in some tool result,
   because the model once attributed "one item up to 10 kg and 115 cm" to clause 7.4.4, a pregnancy clause, in a document that
   gives no such figure.
 
 A failing draft goes back to the model with the exact problem (`nudge`), up to `REVIEW_MAX_ROUNDS` times; after that the
-customer gets HELD, a safe message in their language. An optional model reviewer (`REVIEW_LLM=true`) runs after the
-deterministic checks pass and can reject a draft for reasons a regex cannot see (wrong deadline, misread clause, question not
-answered). It is off by default: it costs one model call per reply, and in a separate study a reviewer model caught only
-40-50% of wrong answers, so it is advisory depth, not the floor. The floor is the deterministic part.
+customer gets HELD, a safe message in their language. One model call is added on top of the deterministic checks, after they
+pass: every cited clause's text against the sentences citing it (`citation_support`, decision #39). A failure of that call is a
+pass: the floor is the deterministic part.
 """
 
 from __future__ import annotations
@@ -38,23 +37,28 @@ from dataclasses import dataclass, field
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 
-from falcon.core.arabic import reply_script
+from falcon.core.arabic import DIGITS, reply_script
 from falcon.core.config import settings
-from falcon.core.faithfulness import ARABIC_DIGITS, Verdict, check_reply, is_success, norm_amount, numbers_in
+from falcon.core.faithfulness import Verdict, check_reply, is_success, norm_amount, numbers_in
 from falcon.core.pii import LABELS as PII_LABELS
 from falcon.core.pii import find as find_pii
 
-from .personas import API_TOOLS, ROLE_PROFILES
+from .personas import CUSTOMER_TOOLS
 
 log = logging.getLogger("falcon.runtime.review")
 
-POLICY_TOOLS = {"search_policy", "get_clause", "get_article", "list_articles", "check_travel_eligibility"}  # the last one returns the clauses it rests on (decision #34)
+POLICY_TOOLS = {"search_policy", "get_clause", "get_article", "list_articles", "check_travel_eligibility"}  # the last one returns the clauses it rests on
+QUOTE_TOOLS = {"quote_cancellation", "quote_change", "quote_extra_bag", "quote_booking"}
+# The document, the eligibility check, and the rules engine's quotes: a question about the fee or refund method on the customer's own
+# booking is answered by the fare rules through a quote (the only source for fees and deadlines), and the full run of 19 Oct held two
+# correct quotes for "no policy tool".
+CONSULT_TOOLS = POLICY_TOOLS | QUOTE_TOOLS
 POLICY_REF_RE = re.compile(r"\b(?:clause|article)s?\s*\d|conditions of carriage|شروط النقل|البند\s*\d|المادة\s*\d|الفقرة\s*\d", re.IGNORECASE)
 POLICY_NUDGE = ("Your previous draft was not sent: it refers to the Conditions of Carriage or a clause, but no policy tool was called in this "
                 "conversation. Call search_policy (or get_clause) now and answer from its result, citing the clause id it returns; "
                 "if the document does not cover the question, say so and offer a human agent.")
 
-# Search scope (FAILURE_DIARY #39). PERIOD_RE: the customer spoke of a period. DAY_RE: they also named a day, so one day is right.
+# Search scope. PERIOD_RE: the customer spoke of a period. DAY_RE: they also named a day, so one day is right.
 PERIOD_RE = re.compile(
     r"\b(?:next|this|coming|following|the)\s+(?:week|weekend|month|fortnight)\b|\bweek\s+after\b|\b(?:first|second|third|last)\s+(?:week|half|two\s+weeks|fortnight)\b"
     r"|\b(?:in|during|sometime\s+in|early|late|mid)\s*-?\s*(?:january|february|march|april|may|june|july|august|september|october|november|december)\b"
@@ -65,7 +69,7 @@ DAY_RE = re.compile(
     r"|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}\b|الاثنين|الإثنين|الثلاثاء|الأربعاء|الاربعاء|الخميس|الجمعة|السبت|الأحد|الاحد|اليوم|غدًا|غدا|الليلة|بعد غد", re.IGNORECASE)
 FLIGHT_RE = re.compile(r"\bFA\d{3,4}\b")
 
-# Language (FAILURE_DIARY #43)
+# Language
 LANG_NAMES = {"ar": "Arabic", "en": "English"}
 LANG_NUDGE = ("Your previous draft was not sent: it is written in {got}, but the customer's last message is in {want}. Write the whole reply "
               "in {want_full}; keep flight numbers, booking references, airport codes, amounts and clause ids as they are.")
@@ -81,10 +85,10 @@ def language_problem(draft_text: str, lang: str | None) -> tuple[str, str] | Non
     return None
 
 
-# Policy answers (FAILURE_DIARY #43): the clause ids a draft cites, and the figures it attributes to the document.
+# Policy answers: the clause ids a draft cites, and the figures it attributes to the document.
 # The citation word may carry an Arabic preposition that drops the article's alef ("وفقًا للبند 6.1", "للمادة", "بالفقرة"), a "no."/"رقم",
 # and markdown emphasis around the id ("clause **13.2.1**", "للبند **6.1**"): seven Arabic answers were held on 18 Oct for "no citation"
-# with the citation in plain sight (FAILURE_DIARY #50). A bare article number after "article"/"المادة" ("Article 17") cites the article
+# with the citation in plain sight. A bare article number after "article"/"المادة" ("Article 17") cites the article
 # itself, which the index holds as 17.0; it is kept as "17" so the retrieval check accepts any retrieved clause of that article.
 POLICY_WORD_RE = re.compile(r"(?:(?P<word>clauses?|articles?|sections?|paragraphs?|(?:ال|لل|بال|وال|فال|كال|ولل|فلل)?(?:بند|بنود|مادة|مواد|فقرة|فقرات))"
                             r"\s*\**\s*(?:(?:no\.?|رقم)\s*)?\**\s*|\[)(?=\d)", re.IGNORECASE)
@@ -92,14 +96,14 @@ CLAUSE_ID_RE = re.compile(r"\d{1,2}(?:\.\d{1,2}){1,3}")
 ARTICLE_NO_RE = re.compile(r"\d{1,2}(?![\d.])")
 ID_SEP_RE = re.compile(r"\**\s*(?:,|and|or|و|&|/)\s*\**\s*")
 RESULT_ID_RE = re.compile(r'"clause_id":\s*"([^"]+)"')
-RESULT_CLAUSES_RE = re.compile(r'"clauses":\s*\[([^\]]*)\]')  # a rules-engine result that names the clauses it rests on (decision #38)
+RESULT_CLAUSES_RE = re.compile(r'"clauses":\s*\[([^\]]*)\]')  # a rules-engine result that names the clauses it rests on
 
 
 def retrieved_ids(tools: list[tuple[str, str]]) -> set[str]:
     """Clause ids any tool result returned: policy results by clause_id, and rules-engine results by their "clauses" list."""
     out: set[str] = set()
     for name, text in tools:
-        if name in POLICY_TOOLS or name == "check_travel_eligibility":
+        if name in POLICY_TOOLS:
             out |= {cid.split("#")[0] for cid in RESULT_ID_RE.findall(text or "")}
         for m in RESULT_CLAUSES_RE.finditer(text or ""):
             out |= set(re.findall(r"\d{1,2}(?:\.\d{1,2}){1,3}", m.group(1)))
@@ -109,7 +113,7 @@ QUANTITY_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:kg|kilograms?|kilos?|كجم|ك
 
 
 # A law, regulation or convention the draft names must appear in a tool result: the Conditions mention the Montreal and Warsaw
-# Conventions, ICAO and IATA; "EU Regulation 261/2004" came from the model's memory (FAILURE_DIARY #47).
+# Conventions, ICAO and IATA; "EU Regulation 261/2004" came from the model's memory.
 REGULATION_RE = re.compile(
     r"\b(?:EU|EC)\s*(?:Regulation\s*)?\(?\s*(?:No\.?\s*)?\d{3}(?:/\d{4})?\b|\bRegulation\s*\(EC\)\s*(?:No\.?\s*)?\d{3}(?:/\d{4})?|"
     r"\b(?:Montreal|Warsaw|Chicago|Tokyo)\s+Convention\b|\bUS\s*DOT\b|\bGDPR\b|\bIATA\b|\bICAO\b|\bEASA\b|\bFAA\b|\bGCAA\b|"
@@ -155,11 +159,6 @@ def cited_clause_ids(text: str) -> list[str]:
     return ids
 
 
-QUOTE_TOOLS = {"quote_cancellation", "quote_change", "quote_extra_bag", "quote_booking"}
-# The document, the eligibility check, and the rules engine's quotes: a question about the fee or refund method on the customer's own
-# booking is answered by the fare rules through a quote (decision #37 names them the only source for fees and deadlines), and the full
-# run of 19 Oct held two correct quotes for "no policy tool".
-CONSULT_TOOLS = POLICY_TOOLS | {"check_travel_eligibility"} | QUOTE_TOOLS
 POLICY_HOLD_PROBLEMS = {"policy_unconsulted", "uncited_policy_answer", "unretrieved_clause", "citation_unsupported", "policy_without_source"}
 HELD_POLICY = {
     "en": ("I can't confirm the answer to this from our Conditions of Carriage, so I'd rather not guess. I can log your question for a human agent, "
@@ -176,7 +175,7 @@ def consulted_this_turn(messages: list[AnyMessage]) -> bool:
 
 
 def policy_question_problem(messages: list[AnyMessage], guardrail: dict | None) -> tuple[str, str] | None:
-    """Decision #37: a question about the rules is answered from the document or not at all."""
+    """A question about the rules is answered from the document or not at all."""
     if not (guardrail or {}).get("policy_question"):
         return None
     if consulted_this_turn(messages):
@@ -211,7 +210,7 @@ def policy_problems(draft_text: str, tools: list[tuple[str, str]], policy_questi
         allowed: set[str] = set()
         for _, text in tools:
             allowed |= numbers_in(text)
-        figures = {norm_amount(n) for n in QUANTITY_RE.findall((draft_text or "").translate(ARABIC_DIGITS))}
+        figures = {norm_amount(n) for n in QUANTITY_RE.findall((draft_text or "").translate(DIGITS))}
         unsupported = sorted(f for f in figures if f not in allowed)
         if unsupported:
             shown = ", ".join(f.rstrip("0").rstrip(".") for f in unsupported)
@@ -221,7 +220,7 @@ def policy_problems(draft_text: str, tools: list[tuple[str, str]], policy_questi
     return out
 
 
-# Disclosed facts (decision #34, FAILURE_DIARY #48): the guard recorded a fact the Conditions may restrict; the reply must follow a check.
+# Disclosed facts: the guard recorded a fact the Conditions may restrict; the reply must follow a check.
 DISCLOSURE_NUDGE = ("Your previous draft was not sent: the customer's message disclosed {items}, which the Conditions of Carriage may restrict, but no policy "
                     "check was made in this turn. Call check_travel_eligibility now with the facts you have (weeks or months of pregnancy, the infant's age in "
                     "days, the child's age and travelling_alone) and search_policy for: {checks}. Then answer from the results, citing the clause id, before "
@@ -252,14 +251,14 @@ def disclosure_problem(messages: list[AnyMessage], guardrail: dict | None) -> tu
     return ("disclosure_unchecked", DISCLOSURE_NUDGE.format(items=items, checks=checks))
 
 
-# Output guardrails (decision #29). Case-sensitive on purpose: "select the flight from the list" is a sentence, "SELECT ... FROM" is SQL.
+# Output guardrails. Case-sensitive on purpose: "select the flight from the list" is a sentence, "SELECT ... FROM" is SQL.
 CODE_RE = re.compile(r"```|^\s*(?:def |class |import |from \w+ import |print\(|console\.log|#include|SELECT\s.+\sFROM\s)", re.M)
 PROMPT_LEAK_RE = re.compile(r"ROLE:\s*customer|REPLY_LANGUAGE:|^How to behave|Signed-in customer:|\[\[opening\]\]|Guardrail note:", re.M)
 
 
 # Tool names are instructions to the model, never words for the customer: "(quote_cancellation)" appeared in a reply on 18 Oct, copied from the
-# options sentence of the prompt. The set is the customer persona's menu plus the API-only upload tool.
-TOOL_NAME_RE = re.compile(r"\b(?:" + "|".join(sorted(ROLE_PROFILES["customer"]["tools"] | API_TOOLS, key=len, reverse=True)) + r")\b")
+# options sentence of the prompt. The set is the customer persona's menu.
+TOOL_NAME_RE = re.compile(r"\b(?:" + "|".join(sorted(CUSTOMER_TOOLS, key=len, reverse=True)) + r")\b")
 
 
 def output_problems(text: str) -> list[tuple[str, str]]:
@@ -391,7 +390,7 @@ def review_draft(draft: AIMessage, messages: list[AnyMessage], lang: str | None 
     return r
 
 
-# ---------------------------------------------------------------- citation support (decision #37): the cited clause must say what the sentence says
+# ---------------------------------------------------------------- citation support: the cited clause must say what the sentence says
 CITATION_PROMPT = """You check citations in an airline assistant's reply against the clause texts it cites, from the airline's Conditions of Carriage.
 For each item you get the clause id, the clause text (English and/or Arabic), and the sentence(s) of the reply that cite it.
 A sentence is supported only if every rule, condition, figure, exception and entitlement it states is present in that clause text (paraphrase and translation
@@ -419,7 +418,7 @@ def clause_texts(tools: list[tuple[str, str]]) -> dict[str, str]:
             continue
         try:
             data = json.loads(text)
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(data, dict):
             take(data)
@@ -476,14 +475,7 @@ async def citation_support(draft: AIMessage, messages: list[AnyMessage]) -> Revi
                          "drop what it does not contain, or say the document does not cover that point and offer a human agent."))
 
 
-# ---------------------------------------------------------------- optional model reviewer
-REVIEWER_PROMPT = """You review the draft reply of an airline customer-service assistant before the customer sees it.
-You are given the customer's last message, the tool calls the assistant made in this conversation with their results, and the draft.
-Reject the draft only for a concrete problem: a fact, amount, date, deadline or rule that is not supported by the tool results or the customer's own words;
-a claim that something was done when no tool result shows it; a clause cited that was not retrieved; the customer's question left unanswered;
-a reply in the wrong language (the draft must be in the language of the customer's last message).
-Do not reject for style, length or tone. Reply with JSON only: {"ok": true} or {"ok": false, "problem": "<one precise sentence>"}."""
-
+# ---------------------------------------------------------------- the review model (one call per reply that cites a clause)
 _reviewer_model = None
 
 
@@ -492,29 +484,7 @@ def _reviewer():
     if _reviewer_model is None:
         from .llm import make_chat_model
 
-        _reviewer_model = make_chat_model(settings.review_model)
+        # its own deadline, one attempt: a citation check that does not answer in time passes the draft, and it must
+        # not hold a customer for the general client's 60 s x 3 attempts (the setting existed and was never read)
+        _reviewer_model = make_chat_model(timeout=settings.review_citation_timeout_s, max_retries=0)
     return _reviewer_model
-
-
-async def model_review(draft: AIMessage, messages: list[AnyMessage]) -> Review:
-    """Ask the review model whether the draft is faithful to the trace. Any failure of the reviewer itself is a pass:
-    the deterministic checks remain the floor, and a reviewer outage must not hold every reply."""
-    tools, customer = trace(messages)
-    last_customer = customer[-1] if customer else ""
-    recent = tools[-6:]
-    brief = {"customer_last_message": last_customer,
-             "tool_results": [{"tool": name, "result": (text[:1500] + "…" if len(text) > 1500 else text)} for name, text in recent],
-             "draft_reply": text_of(draft)}
-    try:
-        out = await _reviewer().ainvoke([SystemMessage(content=REVIEWER_PROMPT), HumanMessage(content=json.dumps(brief, ensure_ascii=False))])
-        raw = text_of(out)
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
-        data = json.loads(m.group(0)) if m else {"ok": True}
-    except Exception as exc:  # noqa: BLE001 - the reviewer is advisory
-        log.warning("model reviewer unavailable, passing the draft: %s", exc)
-        return Review()
-    if data.get("ok", True):
-        return Review()
-    problem = str(data.get("problem") or "the reviewer found the draft unsupported by the tool results").strip()
-    return Review(problems=["reviewer"], reviewer_note=problem,
-                  nudge=f"A reviewer rejected your previous draft: {problem} Fix exactly that, using only the tool results and the customer's own words; call a tool if you need a fact you do not have.")

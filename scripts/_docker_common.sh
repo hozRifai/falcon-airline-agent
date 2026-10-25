@@ -22,8 +22,6 @@ ensure_env() {
   fi
 }
 
-access_code() { grep -E '^DEMO_ACCESS_CODE=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' || true; }
-
 wait_for_db() {
   local i
   for i in $(seq 1 40); do

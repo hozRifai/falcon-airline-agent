@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from .models import Booking, FareRules, FlightStatus, Override, Quote
+from .models import Booking, FareRules, FlightStatus, Quote
 
 LONG_DELAY_MINUTES = 300  # Falcon rule: an airline delay of 5 hours or more entitles a full refund
 BAG_PRICES_AED = {10: Decimal("60"), 20: Decimal("90"), 30: Decimal("130")}  # per passenger, extra kg beyond the fare
@@ -37,13 +37,9 @@ def deadline_at(booking: Booking, rules: FareRules) -> datetime:
     return first - timedelta(hours=rules.deadline_hours)
 
 
-def _status_of(segment_instance: str, statuses: dict[str, FlightStatus]) -> FlightStatus | None:
-    return statuses.get(segment_instance)
-
-
 def _segment_disruption(segment_instance: str, statuses: dict[str, FlightStatus]) -> str | None:
     """'cancelled' or 'long_delay' if the airline disrupted this segment, else None."""
-    st = _status_of(segment_instance, statuses)
+    st = statuses.get(segment_instance)
     if st is None:
         return None
     if st.status == "cancelled":
@@ -71,12 +67,8 @@ def _airline_disruption(booking: Booking, statuses: dict[str, FlightStatus]) -> 
 
 def has_flown(booking: Booking, now: datetime, statuses: dict[str, FlightStatus]) -> bool:
     """True once any segment has departed (or its departure time has passed without a cancellation)."""
-    return _flown(booking, now, statuses)
-
-
-def _flown(booking: Booking, now: datetime, statuses: dict[str, FlightStatus]) -> bool:
     for seg in booking.segments:
-        st = _status_of(seg.flight_instance_id, statuses)
+        st = statuses.get(seg.flight_instance_id)
         if st is not None and st.status in ("departed", "landed"):
             return True
         if seg.dep_at <= now and not (st and st.status == "cancelled"):
@@ -84,23 +76,32 @@ def _flown(booking: Booking, now: datetime, statuses: dict[str, FlightStatus]) -
     return False
 
 
+def travelling(booking: Booking) -> list:
+    """The passengers still on the booking who pay a fare: not infants, not cancelled."""
+    return [p for p in booking.passengers if p.pax_type != "infant" and p.cancelled_at is None]
+
+
 def _pax_count(booking: Booking) -> int:
-    return max(1, len([p for p in booking.passengers if p.pax_type != "infant"]))
+    return max(1, len(travelling(booking)))
 
 
-def cancellation_quote(
-    booking: Booking,
-    rules: FareRules,
-    now: datetime,
-    statuses: dict[str, FlightStatus],
-    refund_method: str = "credit",
-    override: Override | None = None,
-) -> Quote:
-    override = override or Override()
-    pax = _pax_count(booking)
+def cancellation_quote(booking: Booking, rules: FareRules, now: datetime, statuses: dict[str, FlightStatus], refund_method: str = "credit",
+                       *, ignore_deadline: bool = False, waive_fee: bool = False, passenger_ids: list[int] | None = None) -> Quote:
+    """What a cancellation costs and refunds now. The two flags are what an approved exception case would grant (`waiver_quote`);
+    nothing in the agent sets them for a real cancellation. `passenger_ids` cancels only those passengers (decision #60): the
+    refund is what they paid in fares, the fee is per passenger, the booking stays for the others."""
+    active = travelling(booking)
+    chosen = [p for p in active if p.id in set(passenger_ids)] if passenger_ids else active
+    partial = bool(passenger_ids) and 0 < len(chosen) < len(active)
+    pax = max(1, len(chosen))
+    paid = money(sum((s.fare_per_pax for s in booking.segments), Decimal(0)) * len(chosen)) if partial else money(booking.total_paid)
+    who = {"passenger_ids": [p.id for p in chosen], "remaining": len(active) - len(chosen)} if partial else {}
     hrs = hours_to_departure(booking, now)
     deadline = deadline_at(booking, rules)
     base = dict(kind="cancel", pnr=booking.pnr, currency=booking.currency, refund_method=refund_method, hours_to_departure=round(hrs, 1), deadline_at=deadline)
+    if passenger_ids and not chosen:
+        return Quote(**base, allowed=False, reason_code="NO_SUCH_PASSENGER",
+                     reason_en="None of those passenger ids is a paying passenger still on this booking.", reason_ar="لا يوجد راكب بهذه الأرقام على هذا الحجز.")
 
     if booking.status == "cancelled":
         return Quote(**base, allowed=False, reason_code="ALREADY_CANCELLED",
@@ -108,7 +109,7 @@ def cancellation_quote(
 
     disruption = _airline_disruption(booking, statuses)
     if disruption:
-        refund = money(booking.total_paid)
+        refund = paid
         return Quote(**base, allowed=True, reason_code="AIRLINE_CANCELLED" if disruption == "cancelled" else "LONG_DELAY",
                      reason_en=("The airline cancelled your flight, so you are entitled to a full refund by any method, with no fee."
                                 if disruption == "cancelled" else
@@ -116,14 +117,14 @@ def cancellation_quote(
                      reason_ar=("ألغت شركة الطيران رحلتك، لذلك يحق لك استرداد كامل المبلغ بأي طريقة دون رسوم."
                                 if disruption == "cancelled" else
                                 "تأخرت رحلتك خمس ساعات أو أكثر، لذلك يحق لك استرداد كامل المبلغ دون رسوم."),
-                     fee=money(0), refund=refund, details={"passengers": pax, "paid": str(money(booking.total_paid))})
+                     fee=money(0), refund=refund, details={"passengers": pax, "paid": str(paid), **who})
 
-    if _flown(booking, now, statuses):
+    if has_flown(booking, now, statuses):
         return Quote(**base, allowed=False, reason_code="FLOWN",
                      reason_en="The flight has already departed, so this booking can no longer be cancelled or refunded.",
                      reason_ar="أقلعت الرحلة بالفعل، لذلك لا يمكن إلغاء هذا الحجز أو استرداد قيمته.")
 
-    if hrs < rules.deadline_hours and not override.ignore_deadline:
+    if hrs < rules.deadline_hours and not ignore_deadline:
         # A flight delayed by less than five hours gives no refund right, but the customer should hear what would (the delay task of
         # 18 Oct expected the rule to be stated): the threshold is in the reason, with the delay as it stands.
         delay = _short_delay_minutes(booking, statuses)
@@ -132,10 +133,10 @@ def cancellation_quote(
         delay_ar = f" رحلتك متأخرة حاليًا {delay} دقيقة؛ التأخير {LONG_DELAY_MINUTES // 60} ساعات أو أكثر يمنحك استرداد كامل المبلغ دون رسوم." if delay else ""
         return Quote(**base, allowed=False, reason_code="PAST_DEADLINE", waiver_possible=True,
                      reason_en=(f"The {rules.name_en} fare must be cancelled at least {rules.deadline_hours} hours before departure. "
-                                f"Departure is in {hrs:.1f} hours. A supervisor can review an exception request." + delay_en),
+                                f"Departure is in {hrs:.1f} hours. The customer-care team can review an exception case." + delay_en),
                      reason_ar=(f"يجب إلغاء درجة {rules.name_ar} قبل {rules.deadline_hours} ساعة على الأقل من الإقلاع. "
-                                f"الإقلاع بعد {hrs:.1f} ساعة. يمكن للمشرف مراجعة طلب استثناء." + delay_ar),
-                     details={"passengers": pax, **({"delay_minutes": delay} if delay else {})})
+                                f"الإقلاع بعد {hrs:.1f} ساعة. يمكن لفريق خدمة العملاء مراجعة طلب استثناء." + delay_ar),
+                     details={"passengers": pax, **({"delay_minutes": delay} if delay else {}), **who})
 
     if refund_method == "cash":
         allowed, fee_each = rules.refund_cash_allowed, rules.refund_cash_fee
@@ -150,30 +151,20 @@ def cancellation_quote(
             return Quote(**base, allowed=False, reason_code="CREDIT_NOT_ALLOWED",
                          reason_en=f"The {rules.name_en} fare is not refundable.", reason_ar=f"درجة {rules.name_ar} غير قابلة للاسترداد.")
 
-    fee = money(0) if override.waive_fee else money(fee_each * pax)
-    refund = max(money(0), money(booking.total_paid) - fee)
+    fee = money(0) if waive_fee else money(fee_each * pax)
+    refund = max(money(0), paid - fee)
     label_en = "travel credit" if refund_method == "credit" else "the original payment method"
     label_ar = "رصيد سفر" if refund_method == "credit" else "وسيلة الدفع الأصلية"
     return Quote(**base, allowed=True, reason_code="OK",
                  reason_en=f"Cancellation is allowed. Fee {fee} {booking.currency} ({fee_each} per passenger x {pax}); refund {refund} {booking.currency} as {label_en}.",
                  reason_ar=f"الإلغاء مسموح. الرسوم {fee} {booking.currency} ({fee_each} لكل راكب × {pax})؛ المبلغ المسترد {refund} {booking.currency} كـ{label_ar}.",
                  fee=fee, refund=refund,
-                 details={"passengers": pax, "paid": str(money(booking.total_paid)), "fee_per_passenger": str(money(fee_each)),
-                          "override": override.model_dump(exclude_none=True) if (override.ignore_deadline or override.waive_fee) else None})
+                 details={"passengers": pax, "paid": str(paid), "fee_per_passenger": str(money(fee_each)), **who,
+                          **({"exception": {"ignore_deadline": ignore_deadline, "waive_fee": waive_fee}} if ignore_deadline or waive_fee else {})})
 
 
-def change_quote(
-    booking: Booking,
-    rules: FareRules,
-    now: datetime,
-    statuses: dict[str, FlightStatus],
-    segment_seq: int,
-    new_instance_id: str,
-    new_dep_at: datetime,
-    new_fare_per_pax: Decimal,
-    override: Override | None = None,
-) -> Quote:
-    override = override or Override()
+def change_quote(booking: Booking, rules: FareRules, now: datetime, statuses: dict[str, FlightStatus], segment_seq: int, new_instance_id: str,
+                 new_dep_at: datetime, new_fare_per_pax: Decimal) -> Quote:
     pax = _pax_count(booking)
     hrs = hours_to_departure(booking, now)
     deadline = deadline_at(booking, rules)
@@ -186,13 +177,13 @@ def change_quote(
         return Quote(**base, allowed=False, reason_code="NO_SUCH_SEGMENT", reason_en="That flight segment is not on this booking.", reason_ar="هذا القطاع غير موجود في الحجز.")
     if segment.flight_instance_id == new_instance_id:
         return Quote(**base, allowed=False, reason_code="SAME_FLIGHT", reason_en="That is the flight already on the booking.", reason_ar="هذه هي الرحلة الموجودة في الحجز بالفعل.")
-    if _flown(booking, now, statuses):
+    if has_flown(booking, now, statuses):
         return Quote(**base, allowed=False, reason_code="FLOWN", reason_en="The flight has already departed; the booking can no longer be changed.", reason_ar="أقلعت الرحلة بالفعل؛ لا يمكن تغيير الحجز.")
     if new_dep_at <= now:
         return Quote(**base, allowed=False, reason_code="NEW_FLIGHT_DEPARTED", reason_en="The requested flight has already departed.", reason_ar="الرحلة المطلوبة أقلعت بالفعل.")
     disruption = _segment_disruption(segment.flight_instance_id, statuses)
     if disruption:
-        # Involuntary rebooking (FAILURE_DIARY #36): the airline broke the contract, so the same-route rebooking is free whatever the
+        # Involuntary rebooking: the airline broke the contract, so the same-route rebooking is free whatever the
         # fare: no change fee, no fare difference, no deadline, and it does not use up one of the fare's changes.
         return Quote(**base, allowed=True, reason_code="AIRLINE_CANCELLED" if disruption == "cancelled" else "LONG_DELAY",
                      reason_en=("The airline cancelled this flight, so rebooking on the same route is free: no change fee and no fare difference, on any fare."
@@ -206,17 +197,17 @@ def change_quote(
                               "old_fare_per_pax": str(money(segment.fare_per_pax)), "new_fare_per_pax": str(money(segment.fare_per_pax)),
                               "fare_difference": "0.00", "free_change_used": False, "changes_used": booking.changes_used, "max_changes": rules.max_changes,
                               "involuntary": disruption})
-    if (segment.dep_at - now).total_seconds() / 3600 < rules.deadline_hours and not override.ignore_deadline:
+    if (segment.dep_at - now).total_seconds() / 3600 < rules.deadline_hours:
         return Quote(**base, allowed=False, reason_code="PAST_DEADLINE", waiver_possible=True,
                      reason_en=f"Changes to the {rules.name_en} fare must be made at least {rules.deadline_hours} hours before departure.",
                      reason_ar=f"يجب تغيير درجة {rules.name_ar} قبل {rules.deadline_hours} ساعة على الأقل من الإقلاع.")
-    if booking.changes_used >= rules.max_changes and not override.ignore_deadline:
+    if booking.changes_used >= rules.max_changes:
         return Quote(**base, allowed=False, reason_code="MAX_CHANGES", waiver_possible=True,
                      reason_en=f"The {rules.name_en} fare allows {rules.max_changes} change(s); this booking has used {booking.changes_used}.",
                      reason_ar=f"تسمح درجة {rules.name_ar} بـ{rules.max_changes} تغيير؛ استخدم هذا الحجز {booking.changes_used}.")
 
     free = booking.changes_used < rules.free_changes
-    fee_each = money(0) if (free or override.waive_fee) else money(rules.change_fee)
+    fee_each = money(0) if free else money(rules.change_fee)
     fee = money(fee_each * pax)
     diff_each = max(money(0), money(new_fare_per_pax) - money(segment.fare_per_pax))
     diff = money(diff_each * pax)
@@ -236,7 +227,7 @@ def bag_quote(booking: Booking, rules: FareRules, now: datetime, statuses: dict[
     base = dict(kind="bag", pnr=booking.pnr, currency=booking.currency, hours_to_departure=round(hours_to_departure(booking, now), 1))
     if booking.status == "cancelled":
         return Quote(**base, allowed=False, reason_code="ALREADY_CANCELLED", reason_en="This booking is cancelled.", reason_ar="هذا الحجز ملغى.")
-    if _flown(booking, now, statuses):
+    if has_flown(booking, now, statuses):
         return Quote(**base, allowed=False, reason_code="FLOWN", reason_en="The flight has already departed.", reason_ar="أقلعت الرحلة بالفعل.")
     if kg not in BAG_PRICES_AED:
         return Quote(**base, allowed=False, reason_code="INVALID_WEIGHT", reason_en="Baggage can be added in 10, 20 or 30 kg.", reason_ar="يمكن إضافة الأمتعة بوزن 10 أو 20 أو 30 كجم.")
@@ -252,9 +243,10 @@ def bag_quote(booking: Booking, rules: FareRules, now: datetime, statuses: dict[
                  amount_due=due, details={"kg": kg, "passenger_ids": passenger_ids, "included_kg": rules.bag_kg, "segments": len(booking.segments)})
 
 
-def waiver_quote(booking: Booking, rules: FareRules, now: datetime, statuses: dict[str, FlightStatus], refund_method: str, waive_fee: bool) -> Quote:
-    """What would happen if a supervisor approved the exception. Shown to the customer as 'if approved'."""
-    return cancellation_quote(booking, rules, now, statuses, refund_method, Override(ignore_deadline=True, waive_fee=waive_fee))
+def waiver_quote(booking: Booking, rules: FareRules, now: datetime, statuses: dict[str, FlightStatus], refund_method: str, waive_fee: bool,
+                 passenger_ids: list[int] | None = None) -> Quote:
+    """What the customer-care team would grant if it approved the exception case. Shown to the customer as 'if approved'."""
+    return cancellation_quote(booking, rules, now, statuses, refund_method, ignore_deadline=True, waive_fee=waive_fee, passenger_ids=passenger_ids)
 
 
 BOOKING_CLOSES_HOURS = 2  # a new booking is taken until two hours before departure
@@ -292,7 +284,7 @@ def booking_quote(instance: dict, rules: FareRules, now: datetime, status: Fligh
                           "fare_family": rules.code, "fare_per_pax": str(money(fare)), "passengers": passengers, "passenger_names": names, "seats_available": seats})
 
 
-# ---------------------------------------------------------------- fitness to travel: Article 7 of the Conditions as thresholds (decision #34)
+# ---------------------------------------------------------------- fitness to travel: Article 7 of the Conditions as thresholds
 # The figures and clause ids below are the ones in data/policy/coc_en.pdf (the same text search_policy returns), fixed here so that
 # "38 weeks" is decided by code and not by the model reading "36th week" correctly. One function, three uses again: the policy
 # server's check_travel_eligibility tool (which attaches the clause text, so the reviewer can verify every figure the agent repeats),
@@ -476,9 +468,9 @@ def travel_eligibility(*, pregnancy_weeks=None, pregnancy_months=None, multiple_
     return out
 
 
-# What the Conditions of Carriage grant on evidence, as a pure function (decision #38): clause 3.3.2 (a member of the Immediate
+# What the Conditions of Carriage grant on evidence, as a pure function: clause 3.3.2 (a member of the Immediate
 # Family dies before travel: a refund under 10.2.1(a), the fare paid, on a death certificate) and clause 3.3.1 (Force Majeure prevents
-# travel: a credit for the non-refundable part of the fare, on adequate evidence). Logged as a case with the document attached; the
+# travel: a credit for the non-refundable part of the fare, on adequate evidence). Logged as a case; the care team requests the document by email; the
 # care team checks the document and approves. The agent cites the clause and quotes this, never a normal cancellation with a fee.
 COMPASSIONATE_KINDS = {
     "bereavement": {"clauses": ["3.3.2", "10.2.1"], "evidence": "a valid death certificate of the family member", "evidence_ar": "شهادة وفاة سارية لفرد العائلة"},
@@ -496,7 +488,7 @@ def compassionate_quote(booking: Booking, rules: FareRules, now: datetime, statu
     base = dict(kind="cancel", pnr=booking.pnr, currency=booking.currency, refund_method=method, hours_to_departure=round(hrs, 1), deadline_at=deadline_at(booking, rules))
     if booking.status == "cancelled":
         return Quote(**base, allowed=False, reason_code="ALREADY_CANCELLED", reason_en="This booking is already cancelled.", reason_ar="هذا الحجز ملغى بالفعل.")
-    if _flown(booking, now, statuses):
+    if has_flown(booking, now, statuses):
         return Quote(**base, allowed=False, reason_code="FLOWN", reason_en="Clauses 3.3.1 and 3.3.2 apply before the carriage has begun; this flight has already departed.",
                      reason_ar="ينطبق البندان 3.3.1 و3.3.2 قبل بدء الرحلة؛ أقلعت هذه الرحلة بالفعل.")
     refund = money(booking.total_paid)
@@ -511,4 +503,4 @@ def compassionate_quote(booking: Booking, rules: FareRules, now: datetime, statu
     return Quote(**base, allowed=True, reason_code=kind.upper(), fee=money(0), refund=refund,
                  reason_en=reason_en, reason_ar=reason_ar,
                  details={"passengers": pax, "paid": str(money(booking.total_paid)), "clauses": spec["clauses"], "evidence_required": spec["evidence"],
-                          "decided_by": "customer-care team on the attached document"})
+                          "decided_by": "customer-care team on the document it requests"})

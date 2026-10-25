@@ -2,7 +2,7 @@
 
 Tools let the agent search, open a clause, and navigate by article, which is what an "agentic"
 retrieval loop needs: search → read the cited clause in full → check the neighbouring clauses. `check_travel_eligibility`
-applies Article 7 (pregnancy, newborns, children alone) as fixed thresholds and returns the clauses it rests on (decision #34).
+applies Article 7 (pregnancy, newborns, children alone) as fixed thresholds and returns the clauses it rests on.
 Role: Policy.Read. Read-only database role: policy_ro.
 
 Run:  python -m falcon.services.mcp_policy.server   (port 8003)
@@ -33,8 +33,7 @@ search = PolicySearch(db, Embedder(), QueryRewriter())
 audit = Audit("policy", Database(settings.dsn_audit, max_size=2))
 
 mcp = build_server(
-    "falcon-policy",
-    audience=settings.entra_aud_policy,
+    "policy",
     public_url=settings.mcp_policy_url,
     port=PORT,
     instructions="Falcon's Conditions of Carriage in English and Arabic. Semantic search returns clause ids; cite them.",
@@ -111,8 +110,8 @@ async def check_travel_eligibility(pregnancy_weeks: int | None = None, pregnancy
     newborn (weeks x 7); child_age_years with travelling_alone. Returns a status (ok, needs_weeks, conditions_apply, document_required,
     escort_required, clearance_required, not_carried), one finding per fact with the rule in English and Arabic and the figures it used, and
     the full text of every clause it relied on, so you can cite the clause id. State the finding first, then the options when travel is
-    restricted: the document to obtain, cancellation under the fare rules (quote_cancellation), or an exception case with the document
-    attached (request_exception). Other medical conditions, animals, items and documents: use search_policy."""
+    restricted: the document to obtain, cancellation under the fare rules (quote_cancellation), or an exception case for the care team,
+    who request the document by email (request_exception). Other medical conditions, animals, items and documents: use search_policy."""
     require_role(roles.POLICY_READ)
     try:
         findings = rules.travel_eligibility(pregnancy_weeks=pregnancy_weeks, pregnancy_months=pregnancy_months, multiple_pregnancy=bool(multiple_pregnancy),
